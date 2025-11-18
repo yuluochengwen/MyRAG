@@ -1,0 +1,28 @@
+# Ollama Modelfile模板 - 用于加载本地HuggingFace模型
+# 使用方法: 
+# 1. 复制此文件为 Modelfile (在具体模型目录下)
+# 2. 修改 FROM 路径指向本地模型
+# 3. 运行: ollama create 模型名 -f Modelfile
+
+# 指向本地HuggingFace模型路径
+# 支持的格式: GGUF, safetensors (Ollama会自动处理)
+FROM {{MODEL_PATH}}
+
+# 模型参数配置
+PARAMETER temperature 0.7
+PARAMETER top_p 0.9
+PARAMETER top_k 40
+PARAMETER num_ctx 4096
+PARAMETER num_predict 2048
+
+# 系统提示词(可选,根据需要修改)
+TEMPLATE """{{ if .System }}<|system|>
+{{ .System }}<|end|>
+{{ end }}{{ if .Prompt }}<|user|>
+{{ .Prompt }}<|end|>
+<|assistant|>
+{{ end }}{{ .Response }}"""
+
+# 停止词
+PARAMETER stop "<|end|>"
+PARAMETER stop "<|endoftext|>"

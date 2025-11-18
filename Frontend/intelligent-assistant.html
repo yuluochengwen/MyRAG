@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智能助手管理 - RAGFlow.ai</title>
+  <!-- 引入Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 引入Font Awesome -->
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <!-- 引入自定义样式 -->
+  <link rel="stylesheet" href="css/intelligent-assistant.css">
+  
+  <!-- Tailwind配置 -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#165DFF',
+            secondary: '#69B1FF',
+            accent: '#36CFC9',
+            dark: '#1D2129',
+            light: '#F2F3F5',
+            danger: '#F53F3F',
+            warning: '#FF7D00',
+            success: '#00B42A'
+          },
+          fontFamily: {
+            inter: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      }
+    }
+  </script>
+</head>
+<body class="font-inter bg-gray-50 text-dark min-h-screen flex flex-col">
+  <!-- 顶部导航栏 -->
+  <header class="bg-white shadow-sm sticky top-0 z-50">
+    <div class="container mx-auto px-4">
+      <div class="flex justify-between items-center py-4">
+        <!-- Logo -->
+        <div class="flex items-center space-x-2">
+          <div class="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
+            <i class="fa fa-link text-white text-xl"></i>
+          </div>
+          <span class="text-xl font-bold text-primary">RAGFlow<span class="text-dark">.ai</span></span>
+        </div>
+        
+        <!-- 导航链接 - 桌面版 -->
+        <nav class="hidden md:flex items-center space-x-1">
+          <a href="knowledge-base.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">知识库</a>
+          <a href="intelligent-assistant.html" class="nav-link nav-active px-4 py-2 font-medium border-b-2 transition-custom">智能助手</a>
+          <a href="agent.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">Agent</a>
+          <a href="model-management.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">模型管理</a>
+        </nav>
+        
+        <!-- 用户区域 -->
+        <div class="flex items-center space-x-4">
+          <button class="p-2 rounded-full hover:bg-gray-100 transition-custom relative">
+            <i class="fa fa-bell-o text-gray-600"></i>
+            <span class="absolute top-1 right-1 w-2 h-2 bg-danger rounded-full"></span>
+          </button>
+          <div class="flex items-center space-x-2">
+            <img src="https://picsum.photos/id/1005/40/40" alt="用户头像" class="w-10 h-10 rounded-full object-cover border-2 border-white shadow-sm">
+            <span class="hidden md:inline font-medium">管理员</span>
+          </div>
+          <!-- 移动端菜单按钮 -->
+          <button class="md:hidden p-2 rounded-md hover:bg-gray-100 transition-custom" id="mobile-menu-btn">
+            <i class="fa fa-bars text-gray-600"></i>
+          </button>
+        </div>
+      </div>
+      
+      <!-- 移动端导航菜单 -->
+      <div class="md:hidden hidden pb-4" id="mobile-menu">
+        <nav class="flex flex-col space-y-2">
+          <a href="knowledge-base.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">知识库</a>
+          <a href="intelligent-assistant.html" class="mobile-nav-link nav-active px-4 py-3 font-medium bg-primary/5 rounded-lg text-primary transition-custom">智能助手</a>
+          <a href="agent.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">Agent</a>
+          <a href="model-management.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">模型管理</a>
+        </nav>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主内容区域 -->
+  <main class="flex-grow container mx-auto px-4 py-6">
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold">智能助手管理</h1>
+      <div class="flex space-x-3">
+        <div class="relative">
+          <input type="text" id="assistantSearchInput" placeholder="搜索智能助手..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-full md:w-64 transition-custom">
+          <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+        </div>
+        <button class="btn-filter px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 transition-custom">
+          <i class="fa fa-filter mr-2 text-gray-600"></i>
+          <span class="hidden md:inline">筛选</span>
+        </button>
+      </div>
+    </div>
+    
+    <!-- 智能助手卡片网格 -->
+    <div id="assistantsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+      <!-- 由JavaScript动态渲染 -->
+    </div>
+  </main>
+
+  <!-- 创建助手模态框 -->
+  <div id="createAssistantModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+      <div class="p-6 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white z-10">
+        <h2 class="text-2xl font-bold">创建智能助手</h2>
+        <button id="closeModal" class="text-gray-400 hover:text-gray-600">
+          <i class="fa fa-times text-xl"></i>
+        </button>
+      </div>
+      
+      <form id="createAssistantForm" class="p-6">
+        <!-- 使用两列布局节省空间 -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+          <!-- 左列 -->
+          <div class="space-y-4">
+            <!-- 基本信息 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">助手名称 *</label>
+              <input type="text" name="name" required 
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
+                     placeholder="例如：产品顾问">
+            </div>
+            
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">描述</label>
+              <textarea name="description" rows="2"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
+                        placeholder="简要描述功能"></textarea>
+            </div>
+            
+            <!-- 知识库选择 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">关联知识库</label>
+              <select id="kbSelect" name="kb_id"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+                <option value="">不绑定知识库</option>
+              </select>
+            </div>
+            
+            <!-- 嵌入模型 -->
+            <div id="embeddingModelGroup">
+              <label class="block text-sm font-medium text-gray-700 mb-1">嵌入模型 *</label>
+              <select id="embeddingModelSelect" name="embedding_model"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+                <option value="">选择嵌入模型</option>
+              </select>
+            </div>
+          </div>
+          
+          <!-- 右列 -->
+          <div class="space-y-4">
+            <!-- LLM模型 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">LLM模型 *</label>
+              <select id="llmModelSelect" name="llm_model" required
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+                <option value="">选择LLM模型</option>
+              </select>
+            </div>
+            
+            <!-- 提示词模板 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">提示词模板</label>
+              <select id="promptTemplateSelect"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+                <option value="">选择模板(可选)</option>
+              </select>
+            </div>
+            
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">系统提示词</label>
+              <textarea id="systemPrompt" name="system_prompt" rows="4"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
+                        placeholder="定义助手角色..."></textarea>
+            </div>
+            
+            <!-- 配色主题 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">卡片配色</label>
+              <div class="flex gap-2">
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="blue" checked class="mr-1">
+                  <span class="w-6 h-6 rounded bg-blue-100 border-2 border-blue-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="purple" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-purple-100 border-2 border-purple-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="orange" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-orange-100 border-2 border-orange-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="green" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-green-100 border-2 border-green-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="pink" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-pink-100 border-2 border-pink-300"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 按钮组 -->
+        <div class="flex justify-end gap-3 pt-4 border-t border-gray-200">
+          <button type="button" id="cancelCreate"
+                  class="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+            取消
+          </button>
+          <button type="submit"
+                  class="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90">
+            创建助手
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 编辑助手模态框 -->
+  <div id="editAssistantModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+      <div class="p-6 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white z-10">
+        <h2 class="text-2xl font-bold">编辑智能助手</h2>
+        <button id="closeEditModal" class="text-gray-400 hover:text-gray-600">
+          <i class="fa fa-times text-xl"></i>
+        </button>
+      </div>
+      
+      <form id="editAssistantForm" class="p-6">
+        <input type="hidden" id="editAssistantId" name="id">
+        
+        <!-- 使用两列布局节省空间 -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+          <!-- 左列 -->
+          <div class="space-y-4">
+            <!-- 基本信息 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">助手名称 *</label>
+              <input type="text" id="editName" name="name" required 
+                     class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
+                     placeholder="例如：产品顾问">
+            </div>
+            
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">描述</label>
+              <textarea id="editDescription" name="description" rows="2"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
+                        placeholder="简要描述功能"></textarea>
+            </div>
+            
+            <!-- 知识库选择 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">关联知识库</label>
+              <select id="editKbSelect" name="kb_id" multiple size="3"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+              </select>
+              <p class="text-xs text-gray-500 mt-1">💡 Ctrl/Cmd多选</p>
+            </div>
+          </div>
+          
+          <!-- 右列 -->
+          <div class="space-y-4">
+            <!-- LLM模型 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">LLM模型 *</label>
+              <select id="editLlmModelSelect" name="llm_model" required
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+              </select>
+            </div>
+            
+            <!-- 提示词模板 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">提示词模板</label>
+              <select id="editPromptTemplateSelect"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+                <option value="">选择模板(可选)</option>
+              </select>
+            </div>
+            
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">系统提示词</label>
+              <textarea id="editSystemPrompt" name="system_prompt" rows="4"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary"
+                        placeholder="定义助手角色..."></textarea>
+            </div>
+            
+            <!-- 配色主题 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">卡片配色</label>
+              <div class="flex gap-2">
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="blue" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-blue-100 border-2 border-blue-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="purple" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-purple-100 border-2 border-purple-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="orange" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-orange-100 border-2 border-orange-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="green" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-green-100 border-2 border-green-300"></span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                  <input type="radio" name="color_theme" value="pink" class="mr-1">
+                  <span class="w-6 h-6 rounded bg-pink-100 border-2 border-pink-300"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 按钮组 -->
+        <div class="flex justify-end gap-3 pt-4 border-t border-gray-200">
+          <button type="button" id="cancelEdit"
+                  class="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+            取消
+          </button>
+          <button type="submit"
+                  class="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90">
+            保存修改
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // 移动端菜单切换
+    document.getElementById('mobile-menu-btn')?.addEventListener('click', function() {
+      document.getElementById('mobile-menu').classList.toggle('hidden');
+    });
+  </script>
+  
+  <!-- 引入智能助手页面逻辑 -->
+  <script src="js/intelligent-assistant.js"></script>
+</body>
+</html>

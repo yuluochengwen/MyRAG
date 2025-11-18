@@ -1,0 +1,90 @@
+# 应用配置
+app:
+  name: "MyRAG"
+  version: "1.0.0"
+  debug: true
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins:
+    - "http://localhost"
+    - "http://localhost:3000"
+    - "http://127.0.0.1"
+
+# 文件配置
+file:
+  max_size_mb: 100  # 单文件最大100MB
+  total_max_size_mb: 500  # 总大小最大500MB
+  allowed_extensions:
+    - .txt
+    - .md
+    - .pdf
+    - .docx
+    - .doc
+    - .html
+    - .json
+  upload_dir: "KnowledgeBase"  # 相对于项目根目录MyRAG/
+
+# 文本处理配置
+text_processing:
+  chunk_size: 500
+  chunk_overlap: 50
+  separators:
+    - "\n\n"
+    - "\n"
+    - "。"
+    - "！"
+    - "？"
+    - ";"
+    - ";"
+    - "."
+    - " "
+
+# 向量数据库配置
+vector_db:
+  type: "chroma"
+  persist_directory: "VectorDB"  # 相对于项目根目录MyRAG/
+  collection_name_prefix: "kb_"
+
+# 嵌入模型配置
+embedding:
+  provider: "transformers"  # 默认嵌入提供方: transformers, ollama
+  default_model: "BERT-Base"
+  model_dir: "Models/Embedding"  # 相对于项目根目录MyRAG/
+  batch_size: 32
+  max_length: 512
+  
+  # Ollama配置
+  ollama:
+    base_url: "http://localhost:11434"
+    timeout: 30
+    default_model: "nomic-embed-text"
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/app.log"  # 相对于项目根目录MyRAG/
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# WebSocket配置
+websocket:
+  heartbeat_interval: 30
+  max_connections: 100
+
+# LLM配置
+llm:
+  default_provider: "transformers"  # transformers, openai, azure
+  default_model: "DeepSeek-OCR-3B"  # 默认模型名称(6GB显存使用更小的3B模型)
+  local_models_dir: "Models"  # 本地模型根目录(包含LLM/和Embedding/), 相对于项目根目录
+  transformers_quantization: "int4"  # 量化方式: int4(最省显存), int8, fp16
+  transformers_max_memory: 5.5  # 最大显存使用(GB), RTX 3060 6GB建议5.5
+  temperature: 0.7
+  max_tokens: 512  # 降低到512以加快生成速度(CPU offload时很慢)
+
+# 数据库连接池配置
+database:
+  pool_size: 10
+  max_overflow: 20
+  pool_recycle: 3600
+  echo: false

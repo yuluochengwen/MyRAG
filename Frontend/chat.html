@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智能助手对话 - RAGFlow.ai</title>
+  <!-- 引入Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 引入Font Awesome -->
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <!-- 引入Marked.js (Markdown渲染) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- 引入Highlight.js (代码高亮) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+  <!-- 引入自定义样式 -->
+  <link rel="stylesheet" href="css/chat.css">
+  
+  <!-- Tailwind配置 -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#165DFF',
+            secondary: '#69B1FF',
+            accent: '#36CFC9',
+            dark: '#1D2129',
+            light: '#F2F3F5',
+            danger: '#F53F3F',
+            warning: '#FF7D00',
+            success: '#00B42A'
+          },
+          fontFamily: {
+            inter: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      }
+    }
+  </script>
+</head>
+<body class="font-inter bg-gray-50 text-dark h-screen flex flex-col overflow-hidden">
+  <!-- 顶部导航栏 -->
+  <header class="bg-white shadow-sm flex-shrink-0 z-50">
+    <div class="container mx-auto px-4">
+      <div class="flex justify-between items-center py-4">
+        <!-- Logo -->
+        <div class="flex items-center space-x-2">
+          <div class="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
+            <i class="fa fa-link text-white text-xl"></i>
+          </div>
+          <span class="text-xl font-bold text-primary">RAGFlow<span class="text-dark">.ai</span></span>
+        </div>
+        
+        <!-- 导航链接 - 桌面版 -->
+        <nav class="hidden md:flex items-center space-x-1">
+          <a href="knowledge-base.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">知识库</a>
+          <a href="intelligent-assistant.html" class="nav-link nav-active px-4 py-2 font-medium border-b-2 transition-custom">智能助手</a>
+          <a href="agent.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">Agent</a>
+          <a href="model-management.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">模型管理</a>
+        </nav>
+        
+        <!-- 用户区域 -->
+        <div class="flex items-center space-x-4">
+          <button class="p-2 rounded-full hover:bg-gray-100 transition-custom relative">
+            <i class="fa fa-bell-o text-gray-600"></i>
+            <span class="absolute top-1 right-1 w-2 h-2 bg-danger rounded-full"></span>
+          </button>
+          <div class="flex items-center space-x-2">
+            <img src="https://picsum.photos/id/1005/40/40" alt="用户头像" class="w-10 h-10 rounded-full object-cover border-2 border-white shadow-sm">
+            <span class="hidden md:inline font-medium">管理员</span>
+          </div>
+          <!-- 移动端菜单按钮 -->
+          <button class="md:hidden p-2 rounded-md hover:bg-gray-100 transition-custom" id="mobile-menu-btn">
+            <i class="fa fa-bars text-gray-600"></i>
+          </button>
+        </div>
+      </div>
+      
+      <!-- 移动端导航菜单 -->
+      <div class="md:hidden hidden pb-4" id="mobile-menu">
+        <nav class="flex flex-col space-y-2">
+          <a href="knowledge-base.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">知识库</a>
+          <a href="intelligent-assistant.html" class="mobile-nav-link nav-active px-4 py-3 font-medium bg-primary/5 rounded-lg text-primary transition-custom">智能助手</a>
+          <a href="agent.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">Agent</a>
+          <a href="model-management.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">模型管理</a>
+        </nav>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主聊天区域 -->
+  <main class="flex-1 flex min-h-0">
+    <!-- 侧边栏 -->
+    <aside id="sidebar" class="w-80 bg-white border-r border-gray-200 flex flex-col flex-shrink-0 transition-transform duration-300">
+      <!-- 助手信息卡片 -->
+      <div id="assistantInfo" class="p-4 border-b border-gray-200">
+        <!-- 动态渲染 -->
+      </div>
+      
+      <!-- 新建对话按钮 -->
+      <div class="p-4 border-b border-gray-200">
+        <button id="newConversationBtn" class="w-full px-4 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom flex items-center justify-center">
+          <i class="fa fa-plus mr-2"></i>新建对话
+        </button>
+      </div>
+      
+      <!-- 聊天历史列表 -->
+      <div class="flex-1 overflow-y-auto p-4 min-h-0">
+        <h3 class="text-sm font-bold text-gray-500 mb-3">聊天历史</h3>
+        <div id="conversationList">
+          <!-- 动态渲染 -->
+        </div>
+      </div>
+    </aside>
+
+    <!-- 聊天主区域 -->
+    <div class="flex-1 flex flex-col min-h-0">
+      <!-- 顶部助手信息栏 -->
+      <div id="chatHeader" class="bg-white border-b border-gray-200 p-4 flex items-center justify-between flex-shrink-0">
+        <!-- 移动端侧边栏切换按钮 -->
+        <button id="toggleSidebar" class="md:hidden p-2 rounded hover:bg-gray-100 transition-custom">
+          <i class="fa fa-bars text-gray-600"></i>
+        </button>
+        <div id="chatHeaderContent">
+          <!-- 动态渲染 -->
+        </div>
+        <div></div>
+      </div>
+      
+      <!-- 消息滚动区域 -->
+      <div id="messagesContainer" class="flex-1 overflow-y-auto p-6 space-y-4 min-h-0">
+        <!-- 欢迎消息 -->
+        <div id="welcomeMessage" class="text-center py-12">
+          <div class="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
+            <i class="fa fa-robot text-primary text-4xl"></i>
+          </div>
+          <h2 class="text-2xl font-bold mb-2">开始新对话</h2>
+          <p class="text-gray-500">发送消息开始与AI助手交流</p>
+        </div>
+        <!-- 消息气泡动态渲染 -->
+      </div>
+      
+      <!-- 工具栏菜单 -->
+      <div class="bg-gray-50 border-t border-gray-200 px-4 py-2 flex-shrink-0">
+        <div class="flex items-center justify-between text-sm">
+          <!-- 左侧功能按钮 -->
+          <div class="flex items-center space-x-2">
+            <button onclick="clearCurrentConversation()" 
+                    class="toolbar-btn px-3 py-1.5 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-800 transition-custom flex items-center space-x-1"
+                    title="清除当前对话">
+              <i class="fa fa-eraser"></i>
+              <span>清除对话</span>
+            </button>
+            
+            <button onclick="copyLastMessage()" 
+                    class="toolbar-btn px-3 py-1.5 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-800 transition-custom flex items-center space-x-1"
+                    title="复制最后一条AI回复">
+              <i class="fa fa-copy"></i>
+              <span>复制回复</span>
+            </button>
+            
+            <div class="h-4 w-px bg-gray-300"></div>
+            
+            <span class="text-xs text-gray-500" id="messageCountDisplay">
+              <i class="fa fa-comments-o mr-1"></i>
+              <span id="messageCount">0</span> 条消息
+            </span>
+          </div>
+          
+          <!-- 右侧功能区 -->
+          <div class="flex items-center space-x-3">
+            <!-- 设置菜单按钮 -->
+            <div class="relative">
+              <button id="settingsMenuBtn" class="p-2 rounded-lg hover:bg-gray-100 transition-custom" title="设置">
+                <i class="fa fa-ellipsis-v text-gray-600 text-lg"></i>
+              </button>
+              
+              <!-- 下拉菜单 - 向上弹出 -->
+              <div id="settingsMenu" class="hidden absolute right-0 bottom-full mb-2 w-80 bg-white rounded-lg shadow-lg border border-gray-200 z-50">
+                <div class="p-4 space-y-4">
+                  <!-- 标题 -->
+                  <div class="flex items-center justify-between border-b border-gray-200 pb-2">
+                    <h3 class="text-sm font-bold text-gray-700">聊天设置</h3>
+                    <button id="closeSettingsMenu" class="text-gray-400 hover:text-gray-600">
+                      <i class="fa fa-times"></i>
+                    </button>
+                  </div>
+                  
+                  <!-- 流式响应开关 -->
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <i class="fa fa-bolt text-yellow-600"></i>
+                      <span class="text-sm text-gray-700">流式响应</span>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" id="streamToggle" class="sr-only peer" checked>
+                      <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                    </label>
+                  </div>
+                  
+                  <!-- 历史记忆开关 -->
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <i class="fa fa-history text-blue-600"></i>
+                      <span class="text-sm text-gray-700">历史记忆</span>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" id="memoryToggle" class="sr-only peer" checked>
+                      <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                    </label>
+                  </div>
+                  
+                  <!-- 记忆轮数 -->
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <i class="fa fa-brain text-purple-600"></i>
+                      <span class="text-sm text-gray-700">记忆轮数</span>
+                    </div>
+                    <input type="number" id="maxHistoryTurns" value="10" min="0" max="50" 
+                           class="w-20 px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                           title="最多记忆多少轮对话（0=禁用，10=推荐）">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 底部输入框 - 固定在底部 -->
+      <div class="bg-white border-t border-gray-200 p-4 flex-shrink-0">
+        <form id="messageForm" class="flex gap-3">
+          <!-- 输入框容器 -->
+          <div class="flex-1 flex items-end">
+            <textarea 
+              id="messageInput" 
+              rows="1" 
+              placeholder="输入消息... (Shift+Enter换行, Enter发送)"
+              class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-none"
+              style="min-height: 48px; max-height: 200px;"
+            ></textarea>
+          </div>
+          
+          <!-- 发送按钮容器 -->
+          <div class="flex items-end">
+            <button 
+              type="submit" 
+              id="sendBtn"
+              class="px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center whitespace-nowrap"
+              style="height: 48px;"
+            >
+              <i class="fa fa-paper-plane mr-2"></i>发送
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </main>
+
+  <!-- 移动端菜单切换 -->
+  <script>
+    document.getElementById('mobile-menu-btn')?.addEventListener('click', function() {
+      document.getElementById('mobile-menu').classList.toggle('hidden');
+    });
+    
+    // 侧边栏切换(移动端)
+    document.getElementById('toggleSidebar')?.addEventListener('click', function() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('-translate-x-full');
+    });
+  </script>
+  
+  <!-- 引入聊天页面逻辑 -->
+  <script src="js/chat.js"></script>
+</body>
+</html>

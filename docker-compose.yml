@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # MySQL数据库
+  mysql:
+    image: mysql:8.0
+    container_name: myrag-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: myrag
+      MYSQL_USER: myrag
+      MYSQL_PASSWORD: myrag123
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./Backend/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    networks:
+      - myrag-network
+
+  # Ollama服务
+  ollama:
+    image: ollama/ollama:latest
+    container_name: myrag-ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - myrag-network
+    # 如果有GPU，取消注释以下内容
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # FastAPI后端
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: myrag-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./Backend:/app
+      - ./KnowledgeBase:/app/KnowledgeBase
+      - ./Models:/app/Models
+      - ./VectorDB:/app/VectorDB
+      - ./logs:/app/logs
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=123456
+      - MYSQL_DATABASE=myrag
+      - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - mysql
+      - ollama
+    networks:
+      - myrag-network
+
+  # Nginx前端服务器
+  nginx:
+    image: nginx:alpine
+    container_name: myrag-nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./Frontend:/usr/share/nginx/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - backend
+    networks:
+      - myrag-network
+
+volumes:
+  mysql_data:
+  ollama_data:
+
+networks:
+  myrag-network:
+    driver: bridge

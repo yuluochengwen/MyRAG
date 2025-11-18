@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAGFlow-like WebApp</title>
+  <!-- 引入Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 引入Font Awesome -->
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  
+  <!-- Tailwind配置 -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#165DFF',
+            secondary: '#69B1FF',
+            accent: '#36CFC9',
+            dark: '#1D2129',
+            light: '#F2F3F5',
+            danger: '#F53F3F',
+            warning: '#FF7D00',
+            success: '#00B42A'
+          },
+          fontFamily: {
+            inter: ['Inter', 'system-ui', 'sans-serif'],
+          },
+        },
+      }
+    }
+  </script>
+  
+  <!-- 自定义工具类 -->
+  <style type="text/tailwindcss">
+    @layer utilities {
+      .content-auto {
+        content-visibility: auto;
+      }
+      .card-shadow {
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      }
+      .nav-active {
+        @apply text-primary border-primary;
+      }
+      .transition-custom {
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+    }
+  </style>
+</head>
+<body class="font-inter bg-gray-50 text-dark min-h-screen flex flex-col">
+  <!-- 顶部导航栏 -->
+  <header class="bg-white shadow-sm sticky top-0 z-50">
+    <div class="container mx-auto px-4">
+      <div class="flex justify-between items-center py-4">
+        <!-- Logo -->
+        <div class="flex items-center space-x-2">
+          <div class="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
+            <i class="fa fa-link text-white text-xl"></i>
+          </div>
+          <span class="text-xl font-bold text-primary">RAGFlow<span class="text-dark">.ai</span></span>
+        </div>
+        
+        <!-- 导航链接 - 桌面版 -->
+        <nav class="hidden md:flex items-center space-x-1">
+          <a href="#" class="nav-link nav-active px-4 py-2 font-medium border-b-2 transition-custom" data-page="knowledge-base">知识库</a>
+          <a href="#" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom" data-page="intelligent-assistant">智能助手</a>
+          <a href="#" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom" data-page="agent">Agent</a>
+          <a href="#" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom" data-page="model-management">模型管理</a>
+        </nav>
+        
+        <!-- 用户区域 -->
+        <div class="flex items-center space-x-4">
+          <button class="p-2 rounded-full hover:bg-gray-100 transition-custom relative">
+            <i class="fa fa-bell-o text-gray-600"></i>
+            <span class="absolute top-1 right-1 w-2 h-2 bg-danger rounded-full"></span>
+          </button>
+          <div class="flex items-center space-x-2">
+            <img src="https://picsum.photos/id/1005/40/40" alt="用户头像" class="w-10 h-10 rounded-full object-cover border-2 border-white shadow-sm">
+            <span class="hidden md:inline font-medium">管理员</span>
+          </div>
+          <!-- 移动端菜单按钮 -->
+          <button class="md:hidden p-2 rounded-md hover:bg-gray-100 transition-custom" id="mobile-menu-btn">
+            <i class="fa fa-bars text-gray-600"></i>
+          </button>
+        </div>
+      </div>
+      
+      <!-- 移动端导航菜单 -->
+      <div class="md:hidden hidden pb-4" id="mobile-menu">
+        <nav class="flex flex-col space-y-2">
+          <a href="#" class="mobile-nav-link nav-active px-4 py-3 font-medium bg-primary/5 rounded-lg text-primary transition-custom" data-page="knowledge-base">知识库</a>
+          <a href="#" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom" data-page="intelligent-assistant">智能助手</a>
+          <a href="#" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom" data-page="agent">Agent</a>
+          <a href="#" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom" data-page="model-management">模型管理</a>
+        </nav>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主内容区域 -->
+  <main class="flex-grow container mx-auto px-4 py-6">
+    <!-- 知识库页面 -->
+    <section id="knowledge-base-page" class="page-content">
+      <div class="flex justify-between items-center mb-6">
+        <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold">知识库管理</h1>
+        <div class="flex space-x-3">
+          <div class="relative">
+            <input type="text" placeholder="搜索知识库..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-full md:w-64 transition-custom">
+            <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+          </div>
+          <button class="btn-filter px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 transition-custom">
+            <i class="fa fa-filter mr-2 text-gray-600"></i>
+            <span class="hidden md:inline">筛选</span>
+          </button>
+        </div>
+      </div>
+      
+      <!-- 知识库卡片网格 -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- 创建新知识库卡片 -->
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom border-2 border-dashed border-gray-300 hover:border-primary cursor-pointer flex flex-col items-center justify-center text-center group">
+          <div class="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-custom">
+            <i class="fa fa-plus text-primary text-2xl"></i>
+          </div>
+          <h3 class="text-lg font-bold mb-2">创建知识库</h3>
+          <p class="text-gray-500 mb-4">上传文档并创建新的知识库</p>
+          <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom" id="create-knowledge-base-btn">
+            立即创建
+          </button>
+        </div>
+        
+        <!-- 现有知识库卡片 -->
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col">
+          <div class="flex justify-between items-start mb-4">
+            <div class="w-12 h-12 rounded-lg bg-secondary/20 flex items-center justify-center">
+              <i class="fa fa-file-text-o text-secondary text-xl"></i>
+            </div>
+            <div class="dropdown relative">
+              <button class="p-1 rounded hover:bg-gray-100 transition-custom">
+                <i class="fa fa-ellipsis-v text-gray-400"></i>
+              </button>
+              <div class="dropdown-menu absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 hidden">
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">查看详情</a>
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">编辑信息</a>
+                <a href="#" class="block px-4 py-2 text-sm text-danger hover:bg-red-50">删除</a>
+              </div>
+            </div>
+          </div>
+          <h3 class="text-lg font-bold mb-1">产品文档库</h3>
+          <p class="text-gray-500 text-sm mb-4">包含所有产品相关的技术文档和使用手册</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">技术文档</span>
+            <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">Markdown</span>
+          </div>
+          <div class="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="flex items-center">
+              <span class="text-sm text-gray-500 mr-4">
+                <i class="fa fa-file-o mr-1"></i> 24份文档
+              </span>
+              <span class="text-sm text-gray-500">
+                <i class="fa fa-calendar-o mr-1"></i> 2023-06-15
+              </span>
+            </div>
+            <span class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full">
+              <i class="fa fa-microchip mr-1"></i> BERT
+            </span>
+          </div>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col">
+          <div class="flex justify-between items-start mb-4">
+            <div class="w-12 h-12 rounded-lg bg-accent/20 flex items-center justify-center">
+              <i class="fa fa-book text-accent text-xl"></i>
+            </div>
+            <div class="dropdown relative">
+              <button class="p-1 rounded hover:bg-gray-100 transition-custom">
+                <i class="fa fa-ellipsis-v text-gray-400"></i>
+              </button>
+              <div class="dropdown-menu absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 hidden">
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">查看详情</a>
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">编辑信息</a>
+                <a href="#" class="block px-4 py-2 text-sm text-danger hover:bg-red-50">删除</a>
+              </div>
+            </div>
+          </div>
+          <h3 class="text-lg font-bold mb-1">研发知识库</h3>
+          <p class="text-gray-500 text-sm mb-4">研发团队共享的技术资料和代码库</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2 py-1 bg-yellow-50 text-yellow-600 text-xs rounded-full">代码库</span>
+            <span class="px-2 py-1 bg-indigo-50 text-indigo-600 text-xs rounded-full">PDF</span>
+          </div>
+          <div class="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="flex items-center">
+              <span class="text-sm text-gray-500 mr-4">
+                <i class="fa fa-file-o mr-1"></i> 42份文档
+              </span>
+              <span class="text-sm text-gray-500">
+                <i class="fa fa-calendar-o mr-1"></i> 2023-07-22
+              </span>
+            </div>
+            <span class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full">
+              <i class="fa fa-microchip mr-1"></i> BERT
+            </span>
+          </div>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col">
+          <div class="flex justify-between items-start mb-4">
+            <div class="w-12 h-12 rounded-lg bg-warning/20 flex items-center justify-center">
+              <i class="fa fa-users text-warning text-xl"></i>
+            </div>
+            <div class="dropdown relative">
+              <button class="p-1 rounded hover:bg-gray-100 transition-custom">
+                <i class="fa fa-ellipsis-v text-gray-400"></i>
+              </button>
+              <div class="dropdown-menu absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 hidden">
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">查看详情</a>
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">编辑信息</a>
+                <a href="#" class="block px-4 py-2 text-sm text-danger hover:bg-red-50">删除</a>
+              </div>
+            </div>
+          </div>
+          <h3 class="text-lg font-bold mb-1">销售资料库</h3>
+          <p class="text-gray-500 text-sm mb-4">销售团队使用的产品资料和方案文档</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2 py-1 bg-pink-50 text-pink-600 text-xs rounded-full">方案</span>
+            <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">PPT</span>
+          </div>
+          <div class="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="flex items-center">
+              <span class="text-sm text-gray-500 mr-4">
+                <i class="fa fa-file-o mr-1"></i> 18份文档
+              </span>
+              <span class="text-sm text-gray-500">
+                <i class="fa fa-calendar-o mr-1"></i> 2023-08-05
+              </span>
+            </div>
+            <span class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full">
+              <i class="fa fa-microchip mr-1"></i> BERT
+            </span>
+          </div>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col">
+          <div class="flex justify-between items-start mb-4">
+            <div class="w-12 h-12 rounded-lg bg-danger/20 flex items-center justify-center">
+              <i class="fa fa-shield text-danger text-xl"></i>
+            </div>
+            <div class="dropdown relative">
+              <button class="p-1 rounded hover:bg-gray-100 transition-custom">
+                <i class="fa fa-ellipsis-v text-gray-400"></i>
+              </button>
+              <div class="dropdown-menu absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 hidden">
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">查看详情</a>
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">编辑信息</a>
+                <a href="#" class="block px-4 py-2 text-sm text-danger hover:bg-red-50">删除</a>
+              </div>
+            </div>
+          </div>
+          <h3 class="text-lg font-bold mb-1">安全知识库</h3>
+          <p class="text-gray-500 text-sm mb-4">安全漏洞和防护措施相关资料</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2 py-1 bg-red-50 text-red-600 text-xs rounded-full">漏洞</span>
+            <span class="px-2 py-1 bg-gray-50 text-gray-600 text-xs rounded-full">报告</span>
+          </div>
+          <div class="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="flex items-center">
+              <span class="text-sm text-gray-500 mr-4">
+                <i class="fa fa-file-o mr-1"></i> 35份文档
+              </span>
+              <span class="text-sm text-gray-500">
+                <i class="fa fa-calendar-o mr-1"></i> 2023-09-11
+              </span>
+            </div>
+            <span class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full">
+              <i class="fa fa-microchip mr-1"></i> BERT
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+    
+    <!-- 智能助手页面 -->
+    <section id="intelligent-assistant-page" class="page-content hidden">
+      <div class="flex justify-between items-center mb-6">
+        <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold">智能助手管理</h1>
+        <div class="flex space-x-3">
+          <div class="relative">
+            <input type="text" placeholder="搜索智能助手..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-full md:w-64 transition-custom">
+            <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+          </div>
+          <button class="btn-filter px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 transition-custom">
+            <i class="fa fa-filter mr-2 text-gray-600"></i>
+            <span class="hidden md:inline">筛选</span>
+          </button>
+        </div>
+      </div>
+      
+      <!-- 智能助手卡片网格 -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- 创建新智能助手卡片 -->
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom border-2 border-dashed border-gray-300 hover:border-primary cursor-pointer flex flex-col items-center justify-center text-center group">
+          <div class="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-custom">
+            <i class="fa fa-plus text-primary text-2xl"></i>
+          </div>
+          <h3 class="text-lg font-bold mb-2">创建智能助手</h3>
+          <p class="text-gray-500 mb-4">配置知识库和模型，创建专属AI助手</p>
+          <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom" id="create-assistant-btn">
+            立即创建
+          </button>
+        </div>
+        
+        <!-- 现有智能助手卡片 -->
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col">
+          <div class="flex justify-between items-start mb-4">
+            <div class="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center">
+              <i class="fa fa-robot text-blue-500 text-xl"></i>
+            </div>
+            <div class="dropdown relative">
+              <button class="p-1 rounded hover:bg-gray-100 transition-custom">
+                <i class="fa fa-ellipsis-v text-gray-400"></i>
+              </button>
+              <div class="dropdown-menu absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 hidden">
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">对话</a>
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">编辑配置</a>
+                <a href="#" class="block px-4 py-2 text-sm text-danger hover:bg-red-50">删除</a>
+              </div>
+            </div>
+          </div>
+          <h3 class="text-lg font-bold mb-1">产品顾问</h3>
+          <p class="text-gray-500 text-sm mb-4">基于产品文档库的智能问答助手</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">产品文档库</span>
+            <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">GPT-4</span>
+          </div>
+          <div class="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="flex items-center">
+              <span class="text-sm text-gray-500 mr-4">
+                <i class="fa fa-comments-o mr-1"></i> 128次对话
+              </span>
+              <span class="text-sm text-gray-500">
+                <i class="fa fa-calendar-o mr-1"></i> 2023-07-01
+              </span>
+            </div>
+            <span class="px-3 py-1 bg-green-100 text-green-600 text-xs rounded-full">
+              已启用
+            </span>
+          </div>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col">
+          <div class="flex justify-between items-start mb-4">
+            <div class="w-12 h-12 rounded-lg bg-purple-100 flex items-center justify-center">
+              <i class="fa fa-code text-purple-500 text-xl"></i>
+            </div>
+            <div class="dropdown relative">
+              <button class="p-1 rounded hover:bg-gray-100 transition-custom">
+                <i class="fa fa-ellipsis-v text-gray-400"></i>
+              </button>
+              <div class="dropdown-menu absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 hidden">
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">对话</a>
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">编辑配置</a>
+                <a href="#" class="block px-4 py-2 text-sm text-danger hover:bg-red-50">删除</a>
+              </div>
+            </div>
+          </div>
+          <h3 class="text-lg font-bold mb-1">研发助手</h3>
+          <p class="text-gray-500 text-sm mb-4">帮助研发人员解决技术问题</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full">研发知识库</span>
+            <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">GPT-4</span>
+            <span class="px-2 py-1 bg-yellow-50 text-yellow-600 text-xs rounded-full">CodeLlama</span>
+          </div>
+          <div class="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="flex items-center">
+              <span class="text-sm text-gray-500 mr-4">
+                <i class="fa fa-comments-o mr-1"></i> 256次对话
+              </span>
+              <span class="text-sm text-gray-500">
+                <i class="fa fa-calendar-o mr-1"></i> 2023-07-15
+              </span>
+            </div>
+            <span class="px-3 py-1 bg-green-100 text-green-600 text-xs rounded-full">
+              已启用
+            </span>
+          </div>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col">
+          <div class="flex justify-between items-start mb-4">
+            <div class="w-12 h-12 rounded-lg bg-orange-100 flex items-center justify-center">
+              <i class="fa fa-shopping-cart text-orange-500 text-xl"></i>
+            </div>
+            <div class="dropdown relative">
+              <button class="p-1 rounded hover:bg-gray-100 transition-custom">
+                <i class="fa fa-ellipsis-v text-gray-400"></i>
+              </button>
+              <div class="dropdown-menu absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 hidden">
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">对话</a>
+                <a href="#" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">编辑配置</a>
+                <a href="#" class="block px-4 py-2 text-sm text-danger hover:bg-red-50">删除</a>
+              </div>
+            </div>
+          </div>
+          <h3 class="text-lg font-bold mb-1">销售助手</h3>
+          <p class="text-gray-500 text-sm mb-4">帮助销售人员生成方案和回答客户问题</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <span class="px-2 py-1 bg-orange-50 text-orange-600 text-xs rounded-full">销售资料库</span>
+            <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">GPT-3.5</span>
+          </div>
+          <div class="mt-auto pt-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="flex items-center">
+              <span class="text-sm text-gray-500 mr-4">
+                <i class="fa fa-comments-o mr-1"></i> 96次对话
+              </span>
+              <span class="text-sm text-gray-500">
+                <i class="fa fa-calendar-o mr-1"></i> 2023-08-20
+              </span>
+            </div>
+            <span class="px-3 py-1 bg-green-100 text-green-600 text-xs rounded-full">
+              已启用
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+    
+    <!-- Agent页面 -->
+    <section id="agent-page" class="page-content hidden">
+      <div class="flex justify-between items-center mb-6">
+        <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold">Agent管理</h1>
+        <div class="flex space-x-3">
+          <div class="relative">
+            <input type="text" placeholder="搜索Agent..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-full md:w-64 transition-custom">
+            <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+          </div>
+          <button class="btn-filter px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 transition-custom">
+            <i class="fa fa-filter mr-2 text-gray-600"></i>
+            <span class="hidden md:inline">筛选</span>
+          </button>
+        </div>
+      </div>
+      
+      <!-- Agent介绍和创建区域 -->
+      <div class="bg-gradient-to-r from-primary/5 to-secondary/5 rounded-2xl p-8 mb-8">
+        <div class="max-w-3xl">
+          <h2 class="text-2xl font-bold mb-4">什么是Agent？</h2>
+          <p class="text-gray-700 mb-6">Agent是一种能够自主理解、规划和执行复杂任务的高级AI助手。它可以根据用户的目标，自动分解任务、调用工具、整合信息，并提供最终结果。</p>
+          <button class="px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom shadow-md hover:shadow-lg">
+            <i class="fa fa-plus mr-2"></i> 创建第一个Agent
+          </button>
+        </div>
+      </div>
+      
+      <!-- Agent能力卡片 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom">
+          <div class="w-14 h-14 rounded-lg bg-blue-100 flex items-center justify-center mb-4">
+            <i class="fa fa-tasks text-blue-500 text-2xl"></i>
+          </div>
+          <h3 class="text-xl font-bold mb-2">任务分解</h3>
+          <p class="text-gray-600">将复杂任务自动分解为可执行的子任务，并制定执行计划。</p>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom">
+          <div class="w-14 h-14 rounded-lg bg-purple-100 flex items-center justify-center mb-4">
+            <i class="fa fa-cogs text-purple-500 text-2xl"></i>
+          </div>
+          <h3 class="text-xl font-bold mb-2">工具调用</h3>
+          <p class="text-gray-600">根据任务需求，自动选择并调用合适的工具和API。</p>
+        </div>
+        
+        <div class="bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom">
+          <div class="w-14 h-14 rounded-lg bg-green-100 flex items-center justify-center mb-4">
+            <i class="fa fa-refresh text-green-500 text-2xl"></i>
+          </div>
+          <h3 class="text-xl font-bold mb-2">迭代优化</h3>
+          <p class="text-gray-600">根据执行结果持续优化策略，直到完成用户目标。</p>
+        </div>
+      </div>
+      
+      <!-- 示例Agent模板 -->
+      <div class="bg-white rounded-xl p-8 card-shadow mb-8">
+        <h2 class="text-xl font-bold mb-6">Agent模板</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="border border-gray-200 rounded-lg p-4 hover:border-primary hover:bg-primary/5 transition-custom cursor-pointer">
+            <div class="flex items-center mb-3">
+              <div class="w-10 h-10 rounded-lg bg-yellow-100 flex items-center justify-center mr-3">
+                <i class="fa fa-file-text text-yellow-500"></i>
+              </div>
+              <h3 class="font-bold">文档分析师</h3>
+            </div>
+            <p class="text-sm text-gray-600 mb-3">自动分析文档内容，提取关键信息，生成摘要和问答。</p>
+            <div class="flex flex-wrap gap-2 mb-3">
+              <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">文档处理</span>
+              <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">信息提取</span>
+            </div>
+            <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
+              使用模板
+            </button>
+          </div>
+          
+          <div class="border border-gray-200 rounded-lg p-4 hover:border-primary hover:bg-primary/5 transition-custom cursor-pointer">
+            <div class="flex items-center mb-3">
+              <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center mr-3">
+                <i class="fa fa-code text-green-500"></i>
+              </div>
+              <h3 class="font-bold">代码助手</h3>
+            </div>
+            <p class="text-sm text-gray-600 mb-3">帮助编写、调试和优化代码，解释技术概念。</p>
+            <div class="flex flex-wrap gap-2 mb-3">
+              <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">代码生成</span>
+              <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">调试</span>
+            </div>
+            <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
+              使用模板
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Agent使用指南 -->
+      <div class="bg-white rounded-xl p-8 card-shadow">
+        <h2 class="text-xl font-bold mb-6">使用指南</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div class="flex flex-col items-center text-center">
+            <div class="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center mb-4">
+              <span class="text-primary font-bold text-xl">1</span>
+            </div>
+            <h3 class="font-bold mb-2">定义目标</h3>
+            <p class="text-sm text-gray-600">明确Agent需要完成的任务和目标</p>
+          </div>
+          
+          <div class="flex flex-col items-center text-center">
+            <div class="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center mb-4">
+              <span class="text-primary font-bold text-xl">2</span>
+            </div>
+            <h3 class="font-bold mb-2">配置能力</h3>
+            <p class="text-sm text-gray-600">选择Agent可以使用的工具和知识库</p>
+          </div>
+          
+          <div class="flex flex-col items-center text-center">
+            <div class="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center mb-4">
+              <span class="text-primary font-bold text-xl">3</span>
+            </div>
+            <h3 class="font-bold mb-2">执行与优化</h3>
+            <p class="text-sm text-gray-600">运行Agent并根据结果调整配置</p>
+          </div>
+        </div>
+      </div>
+    </section>
+    
+    <!-- 模型管理页面 -->
+    <section id="model-management-page" class="page-content hidden">
+      <div class="flex justify-between items-center mb-6">
+        <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold">模型管理</h1>
+        <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom shadow-md hover:shadow-lg">
+          <i class="fa fa-plus mr-2"></i> 导入模型
+        </button>
+      </div>
+      
+      <!-- 模型类型选项卡 -->
+      <div class="border-b border-gray-200 mb-6">
+        <nav class="flex space-x-8">
+          <button class="model-tab-btn py-4 px-1 border-b-2 border-primary text-primary font-medium" data-tab="embedding-models">嵌入模型</button>
+          <button class="model-tab-btn py-4 px-1 border-b-2 border-transparent text-gray-500 hover:text-primary hover:border-primary/30 font-medium" data-tab="llm-models">LLM模型</button>
+          <button class="model-tab-btn py-4 px-1 border-b-2 border-transparent text-gray-500 hover:text-primary hover:border-primary/30 font-medium" data-tab="lora-models">LoRA模型</button>
+        </nav>
+      </div>
+      
+      <!-- 嵌入模型管理 -->
+      <div id="embedding-models-tab" class="model-tab-content">
+        <div class="bg-white rounded-xl card-shadow overflow-hidden mb-6">
+          <div class="p-6 border-b border-gray-100">
+            <div class="flex justify-between items-center">
+              <h2 class="text-xl font-bold">嵌入模型</h2>
+              <div class="relative">
+                <input type="text" placeholder="搜索嵌入模型..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-64 transition-custom">
+                <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+              </div>
+            </div>
+          </div>
+          
+          <div class="overflow-x-auto">
+            <table class="min-w-full">
+              <thead>
+                <tr class="bg-gray-50">
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">模型名称</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">类型</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">维度</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">大小</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">创建时间</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                </tr>
+              </thead>
+              <tbody class="bg-white divide-y divide-gray-200">
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-microchip text-purple-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">BERT-Base</div>
+                        <div class="text-sm text-gray-500">bert-base-uncased</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">BERT</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    768
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    418MB
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    2023-05-10
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div class="flex space-x-2">
+                      <button class="text-primary hover:text-primary/80">查看</button>
+                      <button class="text-gray-500 hover:text-gray-700">部署</button>
+                      <button class="text-danger hover:text-danger/80">删除</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-microchip text-purple-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">RoBERTa-Base</div>
+                        <div class="text-sm text-gray-500">roberta-base</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">RoBERTa</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    768
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    476MB
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    2023-06-15
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div class="flex space-x-2">
+                      <button class="text-primary hover:text-primary/80">查看</button>
+                      <button class="text-gray-500 hover:text-gray-700">部署</button>
+                      <button class="text-danger hover:text-danger/80">删除</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-microchip text-purple-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">Sentence-BERT</div>
+                        <div class="text-sm text-gray-500">all-MiniLM-L6-v2</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">Sentence-BERT</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    384
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    80MB
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    2023-07-22
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div class="flex space-x-2">
+                      <button class="text-primary hover:text-primary/80">查看</button>
+                      <button class="text-gray-500 hover:text-gray-700">部署</button>
+                      <button class="text-danger hover:text-danger/80">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          
+          <div class="px-6 py-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="text-sm text-gray-500">显示 1 到 3 项，共 3 项</div>
+            <div class="flex space-x-2">
+              <button class="px-3 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>上一页</button>
+              <button class="px-3 py-1 rounded border border-primary bg-primary text-white">1</button>
+              <button class="px-3 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>下一页</button>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 推荐嵌入模型 -->
+        <div class="bg-white rounded-xl p-6 card-shadow">
+          <h2 class="text-xl font-bold mb-4">推荐嵌入模型</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div class="border border-gray-200 rounded-lg p-4 hover:border-primary hover:bg-primary/5 transition-custom">
+              <div class="flex items-center mb-3">
+                <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center mr-3">
+                  <i class="fa fa-star text-blue-500"></i>
+                </div>
+                <h3 class="font-bold">E5-Large</h3>
+              </div>
+              <p class="text-sm text-gray-600 mb-3">优秀的通用嵌入模型，特别适合检索任务</p>
+              <div class="flex flex-wrap gap-2 mb-3">
+                <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">维度: 1024</span>
+                <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">大小: 1.2GB</span>
+              </div>
+              <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
+                导入
+              </button>
+            </div>
+            
+            <div class="border border-gray-200 rounded-lg p-4 hover:border-primary hover:bg-primary/5 transition-custom">
+              <div class="flex items-center mb-3">
+                <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center mr-3">
+                  <i class="fa fa-star text-blue-500"></i>
+                </div>
+                <h3 class="font-bold">MPNet-Base</h3>
+              </div>
+              <p class="text-sm text-gray-600 mb-3">在语义理解任务上表现出色</p>
+              <div class="flex flex-wrap gap-2 mb-3">
+                <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">维度: 768</span>
+                <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">大小: 407MB</span>
+              </div>
+              <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
+                导入
+              </button>
+            </div>
+            
+            <div class="border border-gray-200 rounded-lg p-4 hover:border-primary hover:bg-primary/5 transition-custom">
+              <div class="flex items-center mb-3">
+                <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center mr-3">
+                  <i class="fa fa-star text-blue-500"></i>
+                </div>
+                <h3 class="font-bold">GTE-Base</h3>
+              </div>
+              <p class="text-sm text-gray-600 mb-3">高效的文本嵌入模型，适合中文处理</p>
+              <div class="flex flex-wrap gap-2 mb-3">
+                <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">维度: 768</span>
+                <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">大小: 335MB</span>
+              </div>
+              <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
+                导入
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- LLM模型管理 -->
+      <div id="llm-models-tab" class="model-tab-content hidden">
+        <div class="bg-white rounded-xl card-shadow overflow-hidden mb-6">
+          <div class="p-6 border-b border-gray-100">
+            <div class="flex justify-between items-center">
+              <h2 class="text-xl font-bold">LLM模型</h2>
+              <div class="relative">
+                <input type="text" placeholder="搜索LLM模型..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-64 transition-custom">
+                <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+              </div>
+            </div>
+          </div>
+          
+          <div class="overflow-x-auto">
+            <table class="min-w-full">
+              <thead>
+                <tr class="bg-gray-50">
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">模型名称</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">类型</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">参数规模</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">大小</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">创建时间</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                </tr>
+              </thead>
+              <tbody class="bg-white divide-y divide-gray-200">
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-brain text-green-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">GPT-4</div>
+                        <div class="text-sm text-gray-500">gpt-4</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">GPT</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    约1.76T
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    -
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    2023-04-15
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div class="flex space-x-2">
+                      <button class="text-primary hover:text-primary/80">查看</button>
+                      <button class="text-gray-500 hover:text-gray-700">部署</button>
+                      <button class="text-danger hover:text-danger/80">删除</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-brain text-green-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">GPT-3.5 Turbo</div>
+                        <div class="text-sm text-gray-500">gpt-3.5-turbo</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">GPT</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    约175B
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    -
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    2023-03-01
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div class="flex space-x-2">
+                      <button class="text-primary hover:text-primary/80">查看</button>
+                      <button class="text-gray-500 hover:text-gray-700">部署</button>
+                      <button class="text-danger hover:text-danger/80">删除</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-brain text-green-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">Llama-2-7B</div>
+                        <div class="text-sm text-gray-500">llama-2-7b-chat</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full">Llama</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    7B
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    13GB
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    2023-07-18
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div class="flex space-x-2">
+                      <button class="text-primary hover:text-primary/80">查看</button>
+                      <button class="text-gray-500 hover:text-gray-700">部署</button>
+                      <button class="text-danger hover:text-danger/80">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          
+          <div class="px-6 py-4 border-t border-gray-100 flex justify-between items-center">
+            <div class="text-sm text-gray-500">显示 1 到 3 项，共 3 项</div>
+            <div class="flex space-x-2">
+              <button class="px-3 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>上一页</button>
+              <button class="px-3 py-1 rounded border border-primary bg-primary text-white">1</button>
+              <button class="px-3 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- LoRA模型管理 -->
+      <div id="lora-models-tab" class="model-tab-content hidden">
+        <div class="bg-white rounded-xl card-shadow overflow-hidden mb-6">
+          <div class="p-6 border-b border-gray-100">
+            <div class="flex justify-between items-center">
+              <h2 class="text-xl font-bold">LoRA模型</h2>
+              <div class="relative">
+                <input type="text" placeholder="搜索LoRA模型..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-64 transition-custom">
+                <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+              </div>
+            </div>
+          </div>
+          
+          <div class="overflow-x-auto">
+            <table class="min-w-full">
+              <thead>
+                <tr class="bg-gray-50">
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">模型名称</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">基础模型</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">秩</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">大小</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">创建时间</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                </tr>
+              </thead>
+              <tbody class="bg-white divide-y divide-gray-200">
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-yellow-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-cogs text-yellow-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">产品知识LoRA</div>
+                        <div class="text-sm text-gray-500">product-knowledge-lora</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    Llama-2-7B
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    16
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    128MB
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    2023-08-05
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div class="flex space-x-2">
+                      <button class="text-primary hover:text-primary/80">查看</button>
+                      <button class="text-gray-500 hover:text-gray-700">应用</button>
+                      <button class="text-danger hover:text-danger/80">删除</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <div class="w-10 h-10 rounded-lg bg-yellow-100 flex items-center justify-center mr-4">
+                        <i class="fa fa-cogs text-yellow-500"></i>
+                      </div>
+                      <div>
+                        <div class="font-medium text-gray-900">代码生成LoRA</div>
+                        <div class="text-sm text-gray-500">code-generation-lora</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    CodeLlama-7B
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    32
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    256MB
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-

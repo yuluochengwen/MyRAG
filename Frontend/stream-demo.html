@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>流式响应对比演示</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-4xl mx-auto">
+        <h1 class="text-3xl font-bold mb-6 text-center">流式响应 vs 普通响应对比</h1>
+        
+        <div class="grid grid-cols-2 gap-6">
+            <!-- 流式响应 -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-bold mb-4 text-green-600">✅ 流式响应（实时）</h2>
+                <div id="stream-output" class="min-h-[200px] bg-gray-50 p-4 rounded border border-gray-200 mb-4 whitespace-pre-wrap"></div>
+                <button onclick="testStream()" class="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700">
+                    测试流式响应
+                </button>
+                <p class="text-xs text-gray-500 mt-2">✨ 立即开始显示，逐字输出</p>
+            </div>
+            
+            <!-- 普通响应 -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-xl font-bold mb-4 text-blue-600">⏳ 普通响应（等待）</h2>
+                <div id="normal-output" class="min-h-[200px] bg-gray-50 p-4 rounded border border-gray-200 mb-4 whitespace-pre-wrap"></div>
+                <button onclick="testNormal()" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">
+                    测试普通响应
+                </button>
+                <p class="text-xs text-gray-500 mt-2">⏱️ 等待完成后一次性显示</p>
+            </div>
+        </div>
+        
+        <div class="mt-8 bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+            <h3 class="font-bold mb-2 text-yellow-800">💡 提示</h3>
+            <ul class="text-sm space-y-1 text-yellow-700">
+                <li>• 点击两个按钮，对比体验差异</li>
+                <li>• 流式响应：立即开始，逐字显示，体验流畅</li>
+                <li>• 普通响应：需要等待，一次性显示，适合复制完整内容</li>
+                <li>• 实际项目中已集成开关，用户可自由切换</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        // 模拟文本（实际使用真实API）
+        const sampleText = `你好！我是华为智能助手。
+
+我基于华为公司的知识库进行训练，可以帮助你：
+
+1. 了解华为的企业文化和价值观
+2. 查询公司规章制度和员工守则
+3. 获取技术文档和产品信息
+4. 解答日常工作中的问题
+
+我使用了先进的RAG（检索增强生成）技术，能够从知识库中检索相关内容，然后结合AI大模型生成准确、专业的回答。
+
+如果你有任何问题，随时可以向我提问！`;
+
+        async function testStream() {
+            const output = document.getElementById('stream-output');
+            output.textContent = '';
+            
+            // 逐字显示
+            let index = 0;
+            const interval = setInterval(() => {
+                if (index < sampleText.length) {
+                    output.textContent += sampleText[index];
+                    index++;
+                } else {
+                    clearInterval(interval);
+                }
+            }, 30); // 每30ms显示一个字符
+        }
+        
+        async function testNormal() {
+            const output = document.getElementById('normal-output');
+            output.textContent = '正在生成回答...';
+            
+            // 模拟等待时间
+            await new Promise(resolve => setTimeout(resolve, sampleText.length * 30));
+            
+            // 一次性显示
+            output.textContent = sampleText;
+        }
+        
+        // 真实API测试（需要有助手和对话）
+        async function testRealStream() {
+            const output = document.getElementById('stream-output');
+            output.textContent = '';
+            
+            try {
+                // 需要先获取助手ID和创建对话
+                const response = await fetch(`${API_BASE_URL}/api/conversations/1/chat/stream`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: '请简单介绍一下你自己',
+                        temperature: 0.7
+                    })
+                });
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (!line.trim() || !line.startsWith('data: ')) continue;
+                        
+                        const jsonStr = line.substring(6);
+                        const chunk = JSON.parse(jsonStr);
+                        
+                        if (chunk.type === 'text') {
+                            output.textContent += chunk.data;
+                        }
+                    }
+                }
+            } catch (error) {
+                output.textContent = '错误: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>
