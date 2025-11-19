@@ -25,6 +25,7 @@ class AssistantChatRequest(BaseModel):
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 2048
     max_history_turns: Optional[int] = 10  # 最多读取10轮历史对话（20条消息）
+    use_hybrid_retrieval: Optional[bool] = False  # 是否使用混合检索（向量+图谱）
 
 
 @router.post("", response_model=ConversationResponse)
@@ -387,7 +388,8 @@ async def chat_with_assistant(conversation_id: int, request: AssistantChatReques
             top_k=5,
             llm_model=assistant['llm_model'],
             llm_provider=assistant['llm_provider'],
-            temperature=request.temperature
+            temperature=request.temperature,
+            use_hybrid_retrieval=request.use_hybrid_retrieval
         )
         
         # 7. 保存AI回复
@@ -510,7 +512,8 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                 top_k=5,
                 llm_model=conv['llm_model'],
                 llm_provider=conv['llm_provider'],
-                temperature=request.temperature
+                temperature=request.temperature,
+                use_hybrid_retrieval=request.use_hybrid_retrieval
             ):
                 chunk_type = chunk.get('type')
                 chunk_data = chunk.get('data')

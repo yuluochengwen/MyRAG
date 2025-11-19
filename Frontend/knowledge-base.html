@@ -261,6 +261,25 @@
     </div>
   </div>
 
+  <!-- 知识图谱模态框 -->
+  <div id="graphModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl max-w-6xl w-full mx-4 shadow-2xl max-h-[80vh] flex flex-col">
+      <div class="flex justify-between items-center p-8 pb-4 border-b border-gray-200">
+        <div>
+          <h2 class="text-2xl font-bold text-dark">知识图谱</h2>
+          <p class="text-sm text-gray-500 mt-1" id="graphKbName"></p>
+        </div>
+        <button onclick="closeGraphModal()" class="p-2 rounded-lg hover:bg-gray-100 transition-custom">
+          <i class="fa fa-times text-gray-400 text-xl"></i>
+        </button>
+      </div>
+      
+      <div id="graphContent" class="overflow-y-auto p-8 pt-4">
+        <!-- 动态加载图谱详情 -->
+      </div>
+    </div>
+  </div>
+
   <script>
     // 移动端菜单切换
     document.getElementById('mobile-menu-btn')?.addEventListener('click', function() {

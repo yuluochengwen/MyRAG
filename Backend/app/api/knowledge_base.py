@@ -1,5 +1,7 @@
 """知识库API路由"""
 from typing import List, Optional
+from pathlib import Path
+import shutil
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, BackgroundTasks, Query
 from app.models.schemas import (
     KnowledgeBaseCreate,
@@ -81,7 +83,19 @@ async def list_knowledge_bases(
     """获取知识库列表"""
     try:
         kbs = await kb_service.list_knowledge_bases(skip=skip, limit=limit)
-        return [KnowledgeBaseResponse.from_model(kb) for kb in kbs]
+        
+        # 为每个知识库获取图谱统计
+        result = []
+        for kb in kbs:
+            try:
+                graph_stats = await kb_service.get_graph_stats(kb.id)
+            except Exception as e:
+                logger.warning(f"获取知识库{kb.id}的图谱统计失败: {str(e)}")
+                graph_stats = None
+            
+            result.append(KnowledgeBaseResponse.from_model(kb, graph_stats=graph_stats))
+        
+        return result
         
     except Exception as e:
         logger.error(f"获取知识库列表失败: {str(e)}")
@@ -99,7 +113,14 @@ async def get_knowledge_base(
         if not kb:
             raise HTTPException(status_code=404, detail="知识库不存在")
         
-        return KnowledgeBaseResponse.from_model(kb)
+        # 获取图谱统计
+        try:
+            graph_stats = await kb_service.get_graph_stats(kb_id)
+        except Exception as e:
+            logger.warning(f"获取图谱统计失败: {str(e)}")
+            graph_stats = None
+        
+        return KnowledgeBaseResponse.from_model(kb, graph_stats=graph_stats)
         
     except HTTPException:
         raise
@@ -114,30 +135,56 @@ async def delete_knowledge_base(
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
     vector_store: VectorStoreService = Depends(get_vector_store_service)
 ):
-    """删除知识库"""
+    """彻底删除知识库(包括数据库、文件、向量、图谱)"""
     try:
         # 检查是否存在
         kb = await kb_service.get_knowledge_base(kb_id)
         if not kb:
             raise HTTPException(status_code=404, detail="知识库不存在")
         
-        # 删除向量集合
+        kb_name = kb.name
+        logger.info(f"开始彻底删除知识库: id={kb_id}, name={kb_name}")
+        
+        # 1. 删除向量集合
         collection_name = f"kb_{kb_id}"
         try:
             vector_store.delete_collection(collection_name)
+            logger.info(f"✓ 向量数据已删除: {collection_name}")
         except Exception as e:
             logger.warning(f"删除向量集合失败: {str(e)}")
         
-        # 删除元数据文件
+        # 2. 删除知识图谱数据
+        try:
+            from app.services.neo4j_graph_service import Neo4jGraphService
+            graph_service = Neo4jGraphService()
+            deleted_nodes = graph_service.delete_kb_graph(kb_id)
+            logger.info(f"✓ 图谱数据已删除: {deleted_nodes} 个节点")
+        except Exception as e:
+            logger.warning(f"删除图谱数据失败: {str(e)}")
+        
+        # 3. 删除物理文件夹
+        import shutil
+        kb_dir = Path(settings.file.upload_dir) / f"kb_{kb_id}"
+        if kb_dir.exists():
+            try:
+                shutil.rmtree(kb_dir)
+                logger.info(f"✓ 物理文件已删除: {kb_dir}")
+            except Exception as e:
+                logger.warning(f"删除物理文件失败: {str(e)}")
+        
+        # 4. 删除元数据文件
         metadata_service = MetadataService(settings.file.upload_dir)
         metadata_service.delete_metadata(kb_id)
+        logger.info(f"✓ 元数据已删除")
         
-        # 删除知识库
+        # 5. 删除数据库记录(包括关联的files和text_chunks)
         success = await kb_service.delete_knowledge_base(kb_id)
         if not success:
-            raise HTTPException(status_code=500, detail="删除知识库失败")
+            raise HTTPException(status_code=500, detail="删除数据库记录失败")
+        logger.info(f"✓ 数据库记录已删除")
         
-        return MessageResponse(message=f"知识库 {kb.name} 删除成功")
+        logger.info(f"知识库彻底删除完成: {kb_name}")
+        return MessageResponse(message=f"知识库 '{kb_name}' 已彻底删除(数据库+文件+向量+图谱)")
         
     except HTTPException:
         raise
@@ -258,7 +305,42 @@ async def process_file_background(
                 "total_chunks": kb.chunk_count
             })
         
-        # 9. 发送完成消息
+        # 9. 构建知识图谱（如果启用）
+        try:
+            await ws_manager.send_progress(
+                client_id, kb_id, "building_graph", 90, "正在构建知识图谱..."
+            )
+            
+            # 准备文本块数据
+            chunks_data = [
+                {
+                    'id': ids[i],
+                    'content': chunks[i],
+                    'metadata': {'file_id': file_id, 'chunk_index': i}
+                }
+                for i in range(len(chunks))
+            ]
+            
+            # 构建图谱
+            graph_result = await kb_service.build_knowledge_graph(
+                kb_id=kb_id,
+                chunks=chunks_data,
+                force_rebuild=False  # 不强制重建，增量添加
+            )
+            
+            if graph_result.get('status') == 'success':
+                logger.info(
+                    f"知识图谱构建成功: kb_id={kb_id}, file_id={file_id}, "
+                    f"entities={graph_result.get('entity_count', 0)}, "
+                    f"relations={graph_result.get('relation_count', 0)}"
+                )
+            else:
+                logger.warning(f"知识图谱构建状态: {graph_result.get('status')}")
+                
+        except Exception as e:
+            logger.warning(f"知识图谱构建失败（文件处理继续）: {str(e)}")
+        
+        # 10. 发送完成消息
         await ws_manager.send_complete(
             client_id,
             kb_id,
@@ -565,4 +647,32 @@ async def list_embedding_models(
         
     except Exception as e:
         logger.error(f"获取嵌入模型列表失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{kb_id}/graph/stats")
+async def get_graph_stats(
+    kb_id: int,
+    kb_service: KnowledgeBaseService = Depends(get_kb_service)
+):
+    """获取知识库的知识图谱统计信息"""
+    try:
+        # 检查知识库是否存在
+        kb = await kb_service.get_knowledge_base(kb_id)
+        if not kb:
+            raise HTTPException(status_code=404, detail="知识库不存在")
+        
+        # 获取图谱统计
+        stats = await kb_service.get_graph_stats(kb_id)
+        
+        return {
+            "kb_id": kb_id,
+            "kb_name": kb.name,
+            "stats": stats
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取图谱统计失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

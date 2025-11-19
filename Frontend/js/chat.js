@@ -755,12 +755,16 @@ async function sendChatRequestStream(query, thinkingId) {
     try {
         const memoryEnabled = document.getElementById('memoryToggle')?.checked ?? true;
         const maxHistoryTurns = memoryEnabled ? parseInt(document.getElementById('maxHistoryTurns')?.value || '10') : 0;
+        const useHybridRetrieval = document.getElementById('hybridRetrievalToggle')?.checked ?? false;
+        
         console.log('[Chat] 发送流式请求:', {
             conversation_id: currentConversation.id,
             query: query,
             memory_enabled: memoryEnabled,
-            max_history_turns: maxHistoryTurns
+            max_history_turns: maxHistoryTurns,
+            use_hybrid_retrieval: useHybridRetrieval
         });
+        
         const response = await fetch(`${API_BASE_URL}/api/conversations/${currentConversation.id}/chat/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -768,7 +772,8 @@ async function sendChatRequestStream(query, thinkingId) {
                 query: query,
                 temperature: 0.7,
                 max_tokens: 2048,
-                max_history_turns: maxHistoryTurns
+                max_history_turns: maxHistoryTurns,
+                use_hybrid_retrieval: useHybridRetrieval
             })
         });
         
@@ -806,6 +811,13 @@ async function sendChatRequestStream(query, thinkingId) {
                         // 接收到检索来源
                         sourcesData = chunkData.sources || [];
                         console.log(`检索到 ${chunkData.retrieval_count} 个相关文档`);
+                        
+                        // 提取并渲染知识图谱
+                        const graphData = extractGraphDataFromResponse(sourcesData);
+                        if (graphData) {
+                            renderKnowledgeGraph(graphData);
+                            autoShowGraphPanelIfNeeded(sourcesData);
+                        }
                         
                         // 移除思考指示器，创建消息占位符
                         document.getElementById(thinkingId)?.remove();

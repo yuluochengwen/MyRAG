@@ -1,8 +1,10 @@
 """知识库服务"""
+import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from app.core.database import DatabaseManager
 from app.models.knowledge_base import KnowledgeBase
+from app.core.config import settings
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -404,3 +406,152 @@ class KnowledgeBaseService:
         except Exception as e:
             logger.error(f"检索知识库失败: {str(e)}")
             raise
+    
+    # ==================== 知识图谱相关方法 ====================
+    
+    async def build_knowledge_graph(
+        self,
+        kb_id: int,
+        chunks: List[Dict[str, Any]],
+        force_rebuild: bool = False
+    ) -> Dict[str, Any]:
+        """
+        为知识库构建知识图谱
+        
+        Args:
+            kb_id: 知识库ID
+            chunks: 文本块列表 [{'id': '...', 'content': '...', 'metadata': {...}}, ...]
+            force_rebuild: 是否强制重建（删除旧数据）
+            
+        Returns:
+            构建统计信息
+        """
+        if not settings.knowledge_graph.enabled:
+            logger.info("知识图谱功能未启用")
+            return {'status': 'disabled'}
+        
+        try:
+            from app.services.neo4j_graph_service import get_neo4j_graph_service
+            from app.services.entity_extraction_service import get_entity_extraction_service
+            
+            graph_service = get_neo4j_graph_service()
+            entity_service = get_entity_extraction_service()
+            
+            # 检查Neo4j服务
+            if not graph_service.is_available():
+                logger.warning("Neo4j服务不可用，跳过图谱构建")
+                return {'status': 'neo4j_unavailable'}
+            
+            # 如果强制重建，先删除旧数据
+            if force_rebuild:
+                logger.info(f"强制重建图谱，删除旧数据: kb_id={kb_id}")
+                graph_service.delete_kb_graph(kb_id)
+            
+            # 准备提取数据
+            texts_with_ids = [
+                (chunk['content'], chunk.get('id', f"chunk_{i}")) 
+                for i, chunk in enumerate(chunks)
+                if chunk.get('content')
+            ]
+            
+            if not texts_with_ids:
+                logger.warning("没有可提取的文本块")
+                return {'status': 'no_content'}
+            
+            logger.info(f"开始构建图谱: kb_id={kb_id}, chunks={len(texts_with_ids)}")
+            
+            # 批量提取实体和关系
+            extraction_results = await entity_service.batch_extract(
+                texts=texts_with_ids,
+                concurrency=settings.knowledge_graph.entity_extraction.batch_size
+            )
+            
+            # 合并提取结果
+            all_entities, all_relations = entity_service.merge_extraction_results(extraction_results)
+            
+            if not all_entities:
+                logger.warning("未提取到任何实体")
+                return {
+                    'status': 'no_entities',
+                    'chunks_processed': len(texts_with_ids)
+                }
+            
+            # 批量导入到Neo4j
+            entity_count = graph_service.batch_import_entities(kb_id, all_entities)
+            relation_count = graph_service.batch_import_relations(kb_id, all_relations)
+            
+            logger.info(f"图谱构建完成: kb_id={kb_id}, entities={entity_count}, relations={relation_count}")
+            
+            return {
+                'status': 'success',
+                'chunks_processed': len(texts_with_ids),
+                'entity_count': entity_count,
+                'relation_count': relation_count
+            }
+            
+        except Exception as e:
+            logger.error(f"构建知识图谱失败: {str(e)}")
+            return {
+                'status': 'error',
+                'error': str(e)
+            }
+    
+    async def get_graph_stats(self, kb_id: int) -> Dict[str, Any]:
+        """
+        获取知识库的图谱统计信息
+        
+        Args:
+            kb_id: 知识库ID
+            
+        Returns:
+            统计信息
+        """
+        try:
+            if not settings.knowledge_graph.enabled:
+                return {'enabled': False}
+            
+            from app.services.neo4j_graph_service import get_neo4j_graph_service
+            graph_service = get_neo4j_graph_service()
+            
+            if not graph_service.is_available():
+                return {'enabled': True, 'available': False}
+            
+            stats = graph_service.get_graph_stats(kb_id)
+            stats['enabled'] = True
+            stats['available'] = True
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"获取图谱统计失败: {str(e)}")
+            return {
+                'enabled': True,
+                'available': False,
+                'error': str(e)
+            }
+    
+    async def delete_graph(self, kb_id: int) -> bool:
+        """
+        删除知识库的图谱数据
+        
+        Args:
+            kb_id: 知识库ID
+            
+        Returns:
+            是否成功
+        """
+        try:
+            if not settings.knowledge_graph.enabled:
+                return True
+            
+            from app.services.neo4j_graph_service import get_neo4j_graph_service
+            graph_service = get_neo4j_graph_service()
+            
+            deleted_count = graph_service.delete_kb_graph(kb_id)
+            logger.info(f"删除图谱数据: kb_id={kb_id}, deleted={deleted_count}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"删除图谱数据失败: {str(e)}")
+            return False

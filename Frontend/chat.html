@@ -13,6 +13,8 @@
   <!-- 引入Highlight.js (代码高亮) -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+  <!-- 引入D3.js用于图谱可视化 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
   <!-- 引入自定义样式 -->
   <link rel="stylesheet" href="css/chat.css">
   
@@ -125,7 +127,11 @@
         <div id="chatHeaderContent">
           <!-- 动态渲染 -->
         </div>
-        <div></div>
+        <!-- 图谱面板切换按钮 -->
+        <button id="toggleGraphPanel" class="px-3 py-2 rounded-lg bg-green-50 hover:bg-green-100 border border-green-200 transition-custom flex items-center space-x-2" title="切换知识图谱面板">
+          <i class="fa fa-sitemap text-green-600 text-lg"></i>
+          <!-- <span class="text-sm font-medium text-green-700 hidden md:inline">知识图谱</span> -->
+        </button>
       </div>
       
       <!-- 消息滚动区域 -->
@@ -195,10 +201,23 @@
                     </div>
                     <label class="relative inline-flex items-center cursor-pointer">
                       <input type="checkbox" id="streamToggle" class="sr-only peer" checked>
-                      <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                      <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-yellow-600"></div>
                     </label>
                   </div>
-                  
+
+                  <!-- 混合检索开关 -->
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <i class="fa fa-sitemap text-green-600"></i>
+                      <span class="text-sm text-gray-700">混合检索</span>
+                      <span class="text-xs text-gray-500">(图谱增强)</span>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" id="hybridRetrievalToggle" class="sr-only peer" checked>
+                      <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+                    </label>
+                  </div>                  
+
                   <!-- 历史记忆开关 -->
                   <div class="flex items-center justify-between">
                     <div class="flex items-center space-x-2">
@@ -221,6 +240,9 @@
                            class="w-20 px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-primary/30 focus:border-primary"
                            title="最多记忆多少轮对话（0=禁用，10=推荐）">
                   </div>
+                  
+
+
                 </div>
               </div>
             </div>
@@ -256,6 +278,54 @@
         </form>
       </div>
     </div>
+
+    <!-- 右侧知识图谱面板 -->
+    <aside id="graphPanel" class="w-96 bg-white border-l border-gray-200 flex flex-col flex-shrink-0 transition-all duration-300 hidden">
+      <!-- 面板头部 -->
+      <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <i class="fa fa-sitemap text-green-600"></i>
+          <h3 class="text-sm font-bold text-gray-700">知识图谱</h3>
+        </div>
+        <button id="closeGraphPanel" class="p-1 rounded hover:bg-gray-100 transition-custom">
+          <i class="fa fa-times text-gray-400 hover:text-gray-600"></i>
+        </button>
+      </div>
+
+      <!-- 图谱统计信息 -->
+      <div id="graphStats" class="p-4 border-b border-gray-200 hidden">
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div class="bg-blue-50 rounded-lg p-3">
+            <div class="text-blue-600 text-xs mb-1">实体</div>
+            <div class="text-blue-900 font-bold text-lg" id="graphEntityCount">0</div>
+          </div>
+          <div class="bg-green-50 rounded-lg p-3">
+            <div class="text-green-600 text-xs mb-1">关系</div>
+            <div class="text-green-900 font-bold text-lg" id="graphRelationCount">0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 图谱可视化区域 -->
+      <div class="flex-1 overflow-hidden relative bg-gray-50">
+        <svg id="graphSvg" class="w-full h-full"></svg>
+        <!-- 空状态 -->
+        <div id="graphEmptyState" class="absolute inset-0 flex items-center justify-center text-center p-6">
+          <div>
+            <i class="fa fa-sitemap text-gray-300 text-5xl mb-4"></i>
+            <p class="text-gray-500 text-sm">发送消息后,这里将展示</p>
+            <p class="text-gray-500 text-sm">检索到的知识图谱</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 图谱详情列表 -->
+      <div class="border-t border-gray-200 overflow-y-auto" style="max-height: 300px;">
+        <div id="graphDetailsList" class="p-4 space-y-2">
+          <!-- 动态渲染实体和关系 -->
+        </div>
+      </div>
+    </aside>
   </main>
 
   <!-- 移动端菜单切换 -->
@@ -269,10 +339,34 @@
       const sidebar = document.getElementById('sidebar');
       sidebar.classList.toggle('-translate-x-full');
     });
+
+    // 图谱面板切换
+    document.getElementById('toggleGraphPanel')?.addEventListener('click', function() {
+      const panel = document.getElementById('graphPanel');
+      const toggleBtn = document.getElementById('toggleGraphPanel');
+      panel.classList.toggle('hidden');
+      // 当面板展开时隐藏切换按钮，收起时显示按钮
+      if (panel.classList.contains('hidden')) {
+        toggleBtn.classList.remove('hidden');
+      } else {
+        toggleBtn.classList.add('hidden');
+      }
+    });
+
+    document.getElementById('closeGraphPanel')?.addEventListener('click', function() {
+      const panel = document.getElementById('graphPanel');
+      const toggleBtn = document.getElementById('toggleGraphPanel');
+      panel.classList.add('hidden');
+      // 关闭面板时显示切换按钮
+      toggleBtn.classList.remove('hidden');
+    });
   </script>
   
   <!-- 引入通用工具函数 -->
   <script src="js/common.js"></script>
+  
+  <!-- 引入图谱可视化模块 -->
+  <script src="js/graph-visualization.js"></script>
   
   <!-- 引入聊天页面逻辑 -->
   <script src="js/chat.js"></script>

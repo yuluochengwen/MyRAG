@@ -116,6 +116,49 @@ class LLMConfig(BaseModel):
     max_tokens: int = 512  # 降低默认值，CPU offload时生成速度慢
 
 
+class Neo4jConfig(BaseModel):
+    """Neo4j配置"""
+    uri: str = "bolt://localhost:7687"
+    username: str = "neo4j"
+    password: str = "myrag123"
+    database: str = "neo4j"
+    max_connection_lifetime: int = 3600
+    max_connection_pool_size: int = 50
+    connection_timeout: int = 30
+
+
+class EntityExtractionConfig(BaseModel):
+    """实体提取配置"""
+    provider: str = "ollama"
+    ollama_model: str = "deepseek-v3.1:671b-cloud"
+    temperature: float = 0.1
+    timeout: int = 60
+    max_retries: int = 3
+    batch_size: int = 5
+    min_text_length: int = 50
+
+
+class KnowledgeGraphConfig(BaseModel):
+    """知识图谱配置"""
+    enabled: bool = True
+    provider: str = "neo4j"
+    entity_extraction: EntityExtractionConfig = EntityExtractionConfig()
+    max_hops: int = 2
+    min_entity_length: int = 2
+    enable_by_default: bool = False
+    entity_types: List[str] = [
+        "Person", "Organization", "Location", 
+        "Product", "Concept", "Event", "Date"
+    ]
+
+
+class HybridRetrievalConfig(BaseModel):
+    """混合检索配置"""
+    vector_weight: float = 0.6
+    graph_weight: float = 0.4
+    enable_by_default: bool = False
+
+
 class Settings(BaseSettings):
     """全局配置"""
     app: AppConfig = AppConfig()
@@ -127,6 +170,9 @@ class Settings(BaseSettings):
     logging: LoggingConfig = LoggingConfig()
     websocket: WebSocketConfig = WebSocketConfig()
     llm: LLMConfig = LLMConfig()
+    neo4j: Neo4jConfig = Neo4jConfig()
+    knowledge_graph: KnowledgeGraphConfig = KnowledgeGraphConfig()
+    hybrid_retrieval: HybridRetrievalConfig = HybridRetrievalConfig()
 
     class Config:
         env_file = ".env"

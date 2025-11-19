@@ -158,10 +158,11 @@ class ChatService:
         top_k: int = 5,
         llm_model: Optional[str] = None,
         llm_provider: str = "local",
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        use_hybrid_retrieval: bool = False
     ) -> Dict[str, Any]:
         """
-        智能助手对话（支持多知识库 + 上下文记忆）
+        智能助手对话（支持多知识库 + 上下文记忆 + 混合检索）
         
         Args:
             kb_ids: 知识库ID列表（None表示纯对话模式）
@@ -172,6 +173,7 @@ class ChatService:
             llm_model: LLM模型名称
             llm_provider: LLM提供方
             temperature: 生成温度
+            use_hybrid_retrieval: 是否使用混合检索（向量+图谱）
             
         Returns:
             对话结果
@@ -179,23 +181,35 @@ class ChatService:
         try:
             embedding_model = None
             search_results = []
+            retrieval_method = "none"
             
-            # 1. 如果指定了知识库，进行RAG检索
+            # 1. 如果指定了知识库，进行检索
             if kb_ids and len(kb_ids) > 0:
-                logger.info(f"开始多知识库RAG对话: kb_ids={kb_ids}, query='{query}'")
-                
-                # 多知识库联合检索
-                search_results = await self.kb_service.search_knowledge_bases(
-                    kb_ids=kb_ids,
-                    query=query,
-                    top_k=top_k,
-                    score_threshold=0.2  # 降低阈值，0.2表示弱相关也会被保留
-                )
-                
-                # 获取第一个知识库的embedding_model
+                # 获取第一个知识库信息
                 kb = await self.kb_service.get_knowledge_base(kb_ids[0])
                 if kb:
                     embedding_model = kb.embedding_model
+                
+                # 判断使用哪种检索方式
+                if use_hybrid_retrieval:
+                    # 混合检索（向量+图谱）
+                    logger.info(f"开始混合检索: kb_ids={kb_ids}, query='{query}'")
+                    retrieval_method = "hybrid"
+                    search_results = await self._hybrid_search(
+                        kb_ids=kb_ids,
+                        query=query,
+                        top_k=top_k
+                    )
+                else:
+                    # 纯向量检索
+                    logger.info(f"开始向量检索: kb_ids={kb_ids}, query='{query}'")
+                    retrieval_method = "vector"
+                    search_results = await self.kb_service.search_knowledge_bases(
+                        kb_ids=kb_ids,
+                        query=query,
+                        top_k=top_k,
+                        score_threshold=0.2
+                    )
             else:
                 logger.info(f"纯对话模式: query='{query}'")
             
@@ -206,7 +220,8 @@ class ChatService:
                     'answer': '抱歉，我在知识库中没有找到相关信息。请尝试换个问法或检查知识库内容。',
                     'sources': [],
                     'embedding_model': embedding_model,
-                    'retrieval_count': 0
+                    'retrieval_count': 0,
+                    'retrieval_method': retrieval_method
                 }
             
             # 3. 构建上下文
@@ -233,8 +248,9 @@ class ChatService:
                 'sources': [
                     {
                         'content': r['content'][:200] + ('...' if len(r['content']) > 200 else ''),
-                        'similarity': r['similarity'],
-                        'file_id': r['metadata']['file_id']
+                        'similarity': r.get('similarity', r.get('score', 0)),
+                        'file_id': r.get('metadata', {}).get('file_id'),
+                        'source': r.get('source', 'unknown')
                     }
                     for r in search_results[:3]  # 只返回前3个来源
                 ],
@@ -361,7 +377,8 @@ class ChatService:
         top_k: int = 5,
         llm_model: Optional[str] = None,
         llm_provider: str = "local",
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        use_hybrid_retrieval: bool = False
     ):
         """
         智能助手流式对话（支持上下文记忆）
@@ -375,6 +392,7 @@ class ChatService:
             llm_model: LLM模型名称
             llm_provider: LLM提供方
             temperature: 生成温度
+            use_hybrid_retrieval: 是否使用混合检索（向量+图谱）
             
         Yields:
             dict: 流式响应片段 {"type": "text|sources|done", "data": ...}
@@ -385,14 +403,24 @@ class ChatService:
             
             # 1. 如果指定了知识库，进行RAG检索
             if kb_ids and len(kb_ids) > 0:
-                logger.info(f"开始多知识库RAG对话（流式）: kb_ids={kb_ids}, query='{query}'")
+                logger.info(f"开始多知识库RAG对话（流式）: kb_ids={kb_ids}, query='{query}', hybrid={use_hybrid_retrieval}")
                 
-                search_results = await self.kb_service.search_knowledge_bases(
-                    kb_ids=kb_ids,
-                    query=query,
-                    top_k=top_k,
-                    score_threshold=0.2  # 降低阈值
-                )
+                # 判断使用哪种检索方式
+                if use_hybrid_retrieval:
+                    # 混合检索（向量+图谱）
+                    search_results = await self._hybrid_search(
+                        kb_ids=kb_ids,
+                        query=query,
+                        top_k=top_k
+                    )
+                else:
+                    # 纯向量检索
+                    search_results = await self.kb_service.search_knowledge_bases(
+                        kb_ids=kb_ids,
+                        query=query,
+                        top_k=top_k,
+                        score_threshold=0.2
+                    )
                 
                 kb = await self.kb_service.get_knowledge_base(kb_ids[0])
                 if kb:
@@ -405,10 +433,12 @@ class ChatService:
                 sources = [
                     {
                         'content': r['content'][:200] + ('...' if len(r['content']) > 200 else ''),
-                        'similarity': r['similarity'],
-                        'file_id': r['metadata']['file_id']
+                        'similarity': r.get('similarity', r.get('score', r.get('final_score', 0))),
+                        'file_id': r.get('metadata', {}).get('file_id'),
+                        'source': r.get('source', 'unknown'),
+                        'metadata': r.get('metadata', {})
                     }
-                    for r in search_results[:3]
+                    for r in search_results[:5]  # 返回前5个来源（包含图谱）
                 ]
                 yield {
                     "type": "sources",
@@ -513,7 +543,81 @@ class ChatService:
             
             else:
                 raise ValueError(f"不支持的LLM提供方: {llm_provider}")
-        
+            
         except Exception as e:
-            logger.error(f"LLM流式调用失败: {str(e)}")
-            raise RuntimeError(f"模型生成失败: {str(e)}")
+            logger.error(f"流式对话失败: {str(e)}")
+            yield f"[错误] {str(e)}"
+    
+    # ==================== 混合检索方法 ====================
+    
+    async def _hybrid_search(
+        self,
+        kb_ids: List[int],
+        query: str,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        混合检索（向量+图谱）
+        
+        Args:
+            kb_ids: 知识库ID列表
+            query: 查询文本
+            top_k: 返回结果数量
+            
+        Returns:
+            检索结果列表
+        """
+        try:
+            from app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
+            from app.core.config import settings
+            
+            # 检查是否启用知识图谱
+            if not settings.knowledge_graph.enabled:
+                logger.warning("知识图谱未启用，降级为纯向量检索")
+                return await self.kb_service.search_knowledge_bases(
+                    kb_ids=kb_ids,
+                    query=query,
+                    top_k=top_k,
+                    score_threshold=0.2
+                )
+            
+            hybrid_service = get_hybrid_retrieval_service()
+            
+            # 如果有多个知识库，对每个库分别检索后合并
+            all_results = []
+            
+            for kb_id in kb_ids:
+                results = await hybrid_service.hybrid_search(
+                    kb_id=kb_id,
+                    query=query,
+                    top_k=top_k,
+                    enable_graph=True
+                )
+                all_results.extend(results)
+            
+            # 按最终分数排序并返回top_k
+            all_results.sort(key=lambda x: x.get('final_score', x.get('score', 0)), reverse=True)
+            
+            # 格式化为标准检索结果格式
+            formatted_results = []
+            for result in all_results[:top_k]:
+                formatted_results.append({
+                    'content': result['content'],
+                    'similarity': result.get('final_score', result.get('score', 0)),
+                    'metadata': result.get('metadata', {}),
+                    'source': result.get('source', 'unknown'),
+                    'chunk_id': result.get('chunk_id')
+                })
+            
+            return formatted_results
+            
+        except Exception as e:
+            logger.error(f"混合检索失败，降级为向量检索: {str(e)}")
+            # 降级为纯向量检索
+            return await self.kb_service.search_knowledge_bases(
+                kb_ids=kb_ids,
+                query=query,
+                top_k=top_k,
+                score_threshold=0.2
+            )
+

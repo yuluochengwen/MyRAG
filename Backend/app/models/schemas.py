@@ -37,6 +37,7 @@ class KnowledgeBaseResponse(BaseModel):
     description: Optional[str] = None
     file_count: int = 0
     chunk_count: int = 0
+    graph_stats: Optional[Dict[str, Any]] = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -45,7 +46,7 @@ class KnowledgeBaseResponse(BaseModel):
         from_attributes = True
         
     @classmethod
-    def from_model(cls, kb):
+    def from_model(cls, kb, graph_stats=None):
         """从kb模型创建"""
         return cls(
             id=kb.id,
@@ -55,6 +56,7 @@ class KnowledgeBaseResponse(BaseModel):
             description=kb.description,
             file_count=kb.file_count,
             chunk_count=kb.chunk_count,
+            graph_stats=graph_stats,
             status=kb.status,
             created_at=kb.created_at,
             updated_at=kb.updated_at

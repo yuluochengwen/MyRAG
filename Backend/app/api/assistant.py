@@ -13,7 +13,9 @@ from app.models.schemas import (
     PromptTemplateList
 )
 from app.services.model_scanner import model_scanner
+from app.utils.logger import get_logger
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/api/assistants", tags=["智能助手"])
 
 
@@ -380,7 +382,7 @@ async def update_assistant(
 
 @router.delete("/{assistant_id}")
 async def delete_assistant(assistant_id: int, db: DatabaseManager = Depends(get_database)):
-    """删除助手(软删除)"""
+    """彻底删除助手(包括数据库记录和关联对话)"""
     try:
         # 检查助手是否存在
         sql = "SELECT name FROM assistants WHERE id = %s"
@@ -389,11 +391,26 @@ async def delete_assistant(assistant_id: int, db: DatabaseManager = Depends(get_
         if not result:
             raise HTTPException(status_code=404, detail="助手不存在")
         
-        # 软删除
-        sql = "UPDATE assistants SET status = 'inactive' WHERE id = %s"
-        await db.execute_update(sql, (assistant_id,))
+        assistant_name = result[0]['name']
+        logger.info(f"开始彻底删除助手: id={assistant_id}, name={assistant_name}")
         
-        return {"message": f"助手 '{result[0]['name']}' 已删除"}
+        # 1. 删除关联的对话消息
+        sql = "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE assistant_id = %s)"
+        await db.execute_update(sql, (assistant_id,))
+        logger.info(f"✓ 关联消息已删除")
+        
+        # 2. 删除关联的对话
+        sql = "DELETE FROM conversations WHERE assistant_id = %s"
+        await db.execute_update(sql, (assistant_id,))
+        logger.info(f"✓ 关联对话已删除")
+        
+        # 3. 删除助手记录
+        sql = "DELETE FROM assistants WHERE id = %s"
+        await db.execute_update(sql, (assistant_id,))
+        logger.info(f"✓ 助手记录已删除")
+        
+        logger.info(f"助手彻底删除完成: {assistant_name}")
+        return {"message": f"助手 '{assistant_name}' 已彻底删除(包括所有对话记录)"}
         
     except HTTPException:
         raise

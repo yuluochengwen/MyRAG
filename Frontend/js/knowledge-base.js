@@ -383,6 +383,7 @@ function renderKnowledgeBases(kbs) {
                 <span onclick="viewChunks(${kb.id}, event)" class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full cursor-pointer hover:bg-green-100 transition-custom" title="点击查看分块详情">
                     <i class="fa fa-cubes mr-1"></i>${kb.chunk_count} 块
                 </span>
+                ${renderGraphStats(kb)}
             </div>
             
             <div class="mt-auto pt-4 border-t border-gray-100">
@@ -409,6 +410,31 @@ function renderKnowledgeBases(kbs) {
         
         container.appendChild(card);
     });
+}
+
+/**
+ * 渲染知识图谱统计信息
+ */
+function renderGraphStats(kb) {
+    if (!kb.graph_stats) {
+        return '';
+    }
+    
+    const stats = kb.graph_stats;
+    const nodeCount = stats.node_count || 0;
+    const edgeCount = stats.edge_count || 0;
+    
+    if (nodeCount === 0 && edgeCount === 0) {
+        return '';
+    }
+    
+    return `
+        <span onclick="viewGraph(${kb.id}, event)" 
+              class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full cursor-pointer hover:bg-purple-100 transition-custom" 
+              title="点击查看知识图谱">
+            <i class="fa fa-sitemap mr-1"></i>${nodeCount} 节点 / ${edgeCount} 关系
+        </span>
+    `;
 }
 
 /**
@@ -897,6 +923,144 @@ function closeFilesModal() {
  */
 function closeChunksModal() {
     document.getElementById('chunksModal').classList.add('hidden');
+}
+
+/**
+ * 查看知识图谱
+ */
+async function viewGraph(kbId, event) {
+    if (event) {
+        event.stopPropagation();
+    }
+    
+    try {
+        const modal = document.getElementById('graphModal');
+        const nameEl = document.getElementById('graphKbName');
+        const content = document.getElementById('graphContent');
+        
+        // 显示加载状态
+        nameEl.textContent = '加载中...';
+        content.innerHTML = '<div class="flex items-center justify-center py-12"><i class="fa fa-spinner fa-spin text-3xl text-primary"></i></div>';
+        modal.classList.remove('hidden');
+        
+        // 获取图谱统计
+        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/graph/stats`);
+        
+        if (!response.ok) {
+            throw new Error('获取图谱统计失败');
+        }
+        
+        const data = await response.json();
+        const stats = data.stats || {};
+        
+        // 更新标题
+        nameEl.textContent = data.kb_name || `知识库 #${kbId}`;
+        
+        // 渲染统计信息
+        const nodeCount = stats.node_count || 0;
+        const edgeCount = stats.edge_count || 0;
+        const entityTypes = stats.entity_types || {};
+        
+        if (nodeCount === 0) {
+            content.innerHTML = `
+                <div class="text-center py-12">
+                    <div class="text-gray-400 mb-4">
+                        <i class="fa fa-sitemap text-6xl"></i>
+                    </div>
+                    <p class="text-gray-500 text-lg">暂无知识图谱数据</p>
+                    <p class="text-sm text-gray-400 mt-2">上传文档后会自动构建知识图谱</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // 构建实体类型列表
+        const entityTypesHtml = Object.entries(entityTypes)
+            .sort((a, b) => b[1] - a[1])
+            .map(([type, count]) => `
+                <div class="flex justify-between items-center py-2 px-4 bg-gray-50 rounded-lg">
+                    <span class="text-sm text-gray-700">
+                        <i class="fa fa-tag mr-2 text-primary"></i>${escapeHtml(type)}
+                    </span>
+                    <span class="text-sm font-semibold text-primary">${count}</span>
+                </div>
+            `).join('');
+        
+        content.innerHTML = `
+            <div class="space-y-6">
+                <!-- 概览统计 -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-purple-50 rounded-xl p-6 border border-purple-200">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-purple-600 mb-1">实体节点</p>
+                                <p class="text-3xl font-bold text-purple-700">${nodeCount}</p>
+                            </div>
+                            <div class="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center">
+                                <i class="fa fa-circle-o text-purple-600 text-2xl"></i>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-blue-50 rounded-xl p-6 border border-blue-200">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-blue-600 mb-1">关系边</p>
+                                <p class="text-3xl font-bold text-blue-700">${edgeCount}</p>
+                            </div>
+                            <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
+                                <i class="fa fa-link text-blue-600 text-2xl"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 实体类型分布 -->
+                ${entityTypesHtml ? `
+                    <div>
+                        <h3 class="text-lg font-bold text-dark mb-4 flex items-center">
+                            <i class="fa fa-pie-chart mr-2 text-primary"></i>
+                            实体类型分布
+                        </h3>
+                        <div class="space-y-2">
+                            ${entityTypesHtml}
+                        </div>
+                    </div>
+                ` : ''}
+                
+                <!-- 提示信息 -->
+                <div class="bg-blue-50 border-l-4 border-blue-400 p-4 rounded">
+                    <div class="flex items-start">
+                        <i class="fa fa-info-circle text-blue-600 mt-1 mr-3"></i>
+                        <div class="text-sm text-blue-700">
+                            <p class="font-semibold mb-1">关于知识图谱</p>
+                            <p>知识图谱通过提取文档中的实体和关系，构建结构化的知识网络，可以增强检索和推理能力。</p>
+                            <p class="mt-2">您可以在 <a href="http://localhost:7474" target="_blank" class="underline hover:text-blue-900">Neo4j Browser (localhost:7474)</a> 中可视化查看完整图谱。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+    } catch (error) {
+        console.error('加载知识图谱失败:', error);
+        const content = document.getElementById('graphContent');
+        content.innerHTML = `
+            <div class="text-center py-12">
+                <div class="text-red-400 mb-4">
+                    <i class="fa fa-exclamation-circle text-6xl"></i>
+                </div>
+                <p class="text-red-500 text-lg">${escapeHtml(error.message)}</p>
+            </div>
+        `;
+    }
+}
+
+/**
+ * 关闭知识图谱模态框
+ */
+function closeGraphModal() {
+    document.getElementById('graphModal').classList.add('hidden');
 }
 
 /**

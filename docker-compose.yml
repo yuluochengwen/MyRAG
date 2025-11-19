@@ -40,6 +40,26 @@ services:
     #           count: 1
     #           capabilities: [gpu]
 
+  # Neo4j图数据库
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: myrag-neo4j
+    restart: always
+    ports:
+      - "7474:7474"  # HTTP UI
+      - "7687:7687"  # Bolt协议
+    environment:
+      - NEO4J_AUTH=neo4j/myrag123
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_memory_pagecache_size=512m
+      - NEO4J_db_logs_query_enabled=INFO
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - myrag-network
+
   # FastAPI后端
   backend:
     build:
@@ -62,9 +82,13 @@ services:
       - MYSQL_PASSWORD=123456
       - MYSQL_DATABASE=myrag
       - OLLAMA_BASE_URL=http://ollama:11434
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=myrag123
     depends_on:
       - mysql
       - ollama
+      - neo4j
     networks:
       - myrag-network
 
@@ -86,6 +110,8 @@ services:
 volumes:
   mysql_data:
   ollama_data:
+  neo4j_data:
+  neo4j_logs:
 
 networks:
   myrag-network:

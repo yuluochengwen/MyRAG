@@ -91,6 +91,52 @@ llm:
   temperature: 0.7
   max_tokens: 512  # 降低到512以加快生成速度(CPU offload时很慢)
 
+# Neo4j配置
+neo4j:
+  uri: "bolt://localhost:7687"  # 本地Neo4j连接
+  username: "neo4j"
+  password: "myrag123"  # 首次安装需要修改默认密码
+  database: "neo4j"
+  max_connection_lifetime: 3600
+  max_connection_pool_size: 50
+  connection_timeout: 30
+
+# 知识图谱配置
+knowledge_graph:
+  enabled: true
+  provider: "neo4j"  # neo4j
+  
+  # 实体提取配置
+  entity_extraction:
+    provider: "ollama"  # ollama
+    ollama_model: "deepseek-v3.1:671b-cloud"  # 使用您的云端模型
+    temperature: 0.1  # 低温度保证JSON输出稳定
+    timeout: 60
+    max_retries: 3
+    batch_size: 5  # 并发提取数量
+    min_text_length: 50  # 最小文本长度（过短不提取）
+  
+  # 图谱配置
+  max_hops: 2  # 图遍历最大跳数
+  min_entity_length: 2  # 最小实体长度
+  enable_by_default: false  # 默认是否启用图谱构建
+  
+  # 实体类型定义
+  entity_types:
+    - Person  # 人物
+    - Organization  # 组织
+    - Location  # 地点
+    - Product  # 产品
+    - Concept  # 概念
+    - Event  # 事件
+    - Date  # 日期
+
+# 混合检索配置
+hybrid_retrieval:
+  vector_weight: 0.6  # 向量检索权重
+  graph_weight: 0.4   # 图谱检索权重
+  enable_by_default: false  # 默认使用混合检索
+
 # 数据库连接池配置
 database:
   pool_size: 10
