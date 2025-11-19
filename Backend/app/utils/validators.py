@@ -114,33 +114,11 @@ def validate_kb_name(name: str) -> bool:
     return True
 
 
-def validate_knowledge_base_name(name: str) -> Tuple[bool, str]:
-    """
-    验证知识库名称
-    
-    Args:
-        name: 知识库名称
-        
-    Returns:
-        (是否合法, 错误信息)
-    """
-    if not name or len(name.strip()) == 0:
-        return False, "知识库名称不能为空"
-    
-    if len(name) > 100:
-        return False, "知识库名称不能超过100个字符"
-    
-    # 只允许中文、英文、数字、下划线、连字符
-    pattern = r'^[\u4e00-\u9fa5a-zA-Z0-9_-]+$'
-    if not re.match(pattern, name):
-        return False, "知识库名称只能包含中文、英文、数字、下划线和连字符"
-    
-    return True, ""
-
-
 def sanitize_path(path: str) -> str:
     """
     清理路径，防止路径遍历攻击
+    
+    TODO: 应该在 file_service.py 的 save_file() 中使用此函数
     
     Args:
         path: 路径
@@ -160,6 +138,8 @@ def sanitize_path(path: str) -> str:
 def format_file_size(size_bytes: int) -> str:
     """
     格式化文件大小
+    
+    注意: 主要用于前端展示，后端API返回时使用
     
     Args:
         size_bytes: 字节数

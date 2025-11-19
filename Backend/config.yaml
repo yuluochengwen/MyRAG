@@ -26,8 +26,8 @@ file:
 
 # 文本处理配置
 text_processing:
-  chunk_size: 500
-  chunk_overlap: 50
+  chunk_size: 800  # 增加块大小以适应更多上下文
+  chunk_overlap: 100  # 增加重叠以保持连贯性
   separators:
     - "\n\n"
     - "\n"
@@ -38,6 +38,15 @@ text_processing:
     - ";"
     - "."
     - " "
+  
+  # 语义分割配置（基于LLM）
+  semantic_split:
+    enabled: true  # 启用语义分割
+    max_chunk_size: 800  # 语义块最大大小
+    min_chunk_size: 200  # 语义块最小大小
+    ollama_model: "deepseek-v3.1:671b-cloud"  # 用于语义判断的Ollama模型
+    use_for_short_text: true  # 是否对短文本使用LLM分割
+    short_text_threshold: 5000  # 短文本阈值（字符数）
 
 # 向量数据库配置
 vector_db:

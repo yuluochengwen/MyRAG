@@ -502,5 +502,15 @@ class TransformersService:
             return False
 
 
-# 全局单例
-transformers_service = TransformersService()
+# 延迟加载单例（避免启动时加载torch/CUDA）
+_transformers_service_instance = None
+
+def get_transformers_service() -> TransformersService:
+    """获取TransformersService单例（延迟加载）
+    
+    首次调用时才初始化，避免Windows多进程启动时的CUDA冲突
+    """
+    global _transformers_service_instance
+    if _transformers_service_instance is None:
+        _transformers_service_instance = TransformersService()
+    return _transformers_service_instance

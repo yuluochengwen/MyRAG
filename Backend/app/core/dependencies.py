@@ -47,13 +47,15 @@ def get_file_service() -> FileService:
 
 
 def get_embedding_service() -> EmbeddingService:
-    """获取向量化服务"""
-    return EmbeddingService()
+    """获取向量化服务（返回全局单例，避免重复加载模型）"""
+    from app.services.embedding_service import get_embedding_service as _get_singleton
+    return _get_singleton()
 
 
 def get_vector_service() -> VectorStoreService:
-    """获取向量存储服务"""
-    return VectorStoreService()
+    """获取向量存储服务（返回全局单例）"""
+    from app.services.vector_store_service import get_vector_store_service as _get_singleton
+    return _get_singleton()
 
 
 def get_chat_service() -> ChatService:

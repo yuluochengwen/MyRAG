@@ -171,10 +171,26 @@ async def process_file_background(
             client_id, kb_id, "chunking", 30, "正在分块文本..."
         )
         
-        splitter = TextSplitter()
-        chunks = splitter.split_text(content)
+        # 根据配置选择分割策略
+        semantic_config = settings.text_processing.semantic_split
         
-        logger.info(f"文本分块完成: file_id={file_id}, chunks={len(chunks)}")
+        if semantic_config.enabled and semantic_config.use_for_short_text and len(content) < semantic_config.short_text_threshold:
+            # 短文本使用LLM语义分割
+            from app.utils.semantic_splitter import get_semantic_splitter
+            splitter = get_semantic_splitter()
+            chunks = splitter.split_text(content, use_llm=True)
+            logger.info(f"使用LLM语义分割: file_id={file_id}, content_len={len(content)}, chunks={len(chunks)}")
+        elif semantic_config.enabled:
+            # 长文本使用快速规则分割
+            from app.utils.semantic_splitter import get_semantic_splitter
+            splitter = get_semantic_splitter()
+            chunks = splitter.split_text(content, use_llm=False)
+            logger.info(f"使用规则分割（文本过长）: file_id={file_id}, content_len={len(content)}, chunks={len(chunks)}")
+        else:
+            # 禁用语义分割，使用传统TextSplitter
+            splitter = TextSplitter()
+            chunks = splitter.split_text(content)
+            logger.info(f"使用传统分割: file_id={file_id}, chunks={len(chunks)}")
         
         # 3. 生成向量
         await ws_manager.send_progress(
@@ -379,6 +395,69 @@ async def get_file_content(
         raise
     except Exception as e:
         logger.error(f"获取文件内容失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{kb_id}/files/{file_id}", response_model=MessageResponse)
+async def delete_file(
+    kb_id: int,
+    file_id: int,
+    file_service: FileService = Depends(get_file_service),
+    vector_store: VectorStoreService = Depends(get_vector_store_service),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service)
+):
+    """删除知识库中的文件"""
+    try:
+        # 验证文件属于该知识库
+        file = await file_service.get_file(file_id)
+        if not file or file.kb_id != kb_id:
+            raise HTTPException(status_code=404, detail="文件不存在")
+        
+        # 从向量数据库中删除该文件的所有chunks
+        collection_name = f"kb_{kb_id}"
+        try:
+            # 查询该文件的所有chunk的vector_id
+            chunk_ids = await db_manager.execute_query(
+                "SELECT vector_id FROM text_chunks WHERE file_id = %s",
+                (file_id,)
+            )
+            
+            if chunk_ids:
+                vector_ids = [row['vector_id'] for row in chunk_ids]
+                vector_store.delete_by_ids(collection_name, vector_ids)
+                logger.info(f"已从向量数据库删除文件向量: file_id={file_id}, count={len(vector_ids)}")
+        except Exception as e:
+            logger.warning(f"删除向量时出错: {str(e)}")
+        
+        # 删除数据库中的text_chunks记录（会被外键级联删除，但为了确保可以手动删除）
+        try:
+            await db_manager.execute_update(
+                "DELETE FROM text_chunks WHERE file_id = %s",
+                (file_id,)
+            )
+        except Exception as e:
+            logger.warning(f"删除text_chunks记录时出错: {str(e)}")
+        
+        # 删除文件记录和磁盘文件
+        success = await file_service.delete_file(file_id)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="文件删除失败")
+        
+        # 更新知识库统计信息
+        try:
+            await kb_service.update_stats(kb_id)
+            logger.info(f"已更新知识库统计信息: kb_id={kb_id}")
+        except Exception as e:
+            logger.warning(f"更新知识库统计信息失败: {str(e)}")
+        
+        logger.info(f"文件删除成功: kb_id={kb_id}, file_id={file_id}, filename={file.filename}")
+        return MessageResponse(message=f"文件 '{file.filename}' 删除成功")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除文件失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

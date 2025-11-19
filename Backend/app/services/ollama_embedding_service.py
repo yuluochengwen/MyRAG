@@ -1,5 +1,6 @@
 """Ollama嵌入模型服务"""
 import requests
+import numpy as np
 from typing import List, Optional
 from app.core.config import settings
 from app.utils.logger import get_logger
@@ -95,7 +96,15 @@ class OllamaEmbeddingService:
                     if not embedding:
                         raise RuntimeError(f"Ollama返回的响应中没有embedding字段: {result}")
                     
-                    embeddings.append(embedding)
+                    # 归一化向量（重要：ChromaDB需要归一化的向量以正确计算L2距离）
+                    embedding_array = np.array(embedding)
+                    norm = np.linalg.norm(embedding_array)
+                    if norm > 0:
+                        embedding_normalized = (embedding_array / norm).tolist()
+                    else:
+                        embedding_normalized = embedding
+                    
+                    embeddings.append(embedding_normalized)
                     
                     # 显示进度
                     if (i + 1) % 10 == 0 or (i + 1) == len(texts):
@@ -198,5 +207,12 @@ class OllamaEmbeddingService:
             return None
 
 
-# 全局单例
-ollama_embedding_service = OllamaEmbeddingService()
+# 延迟加载单例
+_ollama_embedding_service_instance = None
+
+def get_ollama_embedding_service() -> OllamaEmbeddingService:
+    """获取OllamaEmbeddingService单例（延迟加载）"""
+    global _ollama_embedding_service_instance
+    if _ollama_embedding_service_instance is None:
+        _ollama_embedding_service_instance = OllamaEmbeddingService()
+    return _ollama_embedding_service_instance

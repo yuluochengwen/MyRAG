@@ -50,6 +50,10 @@ class FileService:
             # 验证文件大小
             validate_file_size(file_size)
             
+            # 清理文件名，防止路径遍历攻击
+            from app.utils.validators import sanitize_path
+            safe_filename = sanitize_path(filename)
+            
             # 计算文件哈希
             file_hash = hashlib.md5(content).hexdigest()
             
@@ -63,7 +67,7 @@ class FileService:
             kb_dir = os.path.join(self.upload_dir, f"kb_{kb_id}", "files")
             os.makedirs(kb_dir, exist_ok=True)
             
-            storage_path = os.path.join(kb_dir, f"{file_hash}_{filename}")
+            storage_path = os.path.join(kb_dir, f"{file_hash}_{safe_filename}")
             
             # 保存文件
             with open(storage_path, 'wb') as f:
@@ -78,11 +82,11 @@ class FileService:
             
             file_id = await self.db.execute_insert(
                 sql,
-                (kb_id, filename, file_type, file_size, file_hash, storage_path, 'uploaded')
+                (kb_id, safe_filename, file_type, file_size, file_hash, storage_path, 'uploaded')
             )
             
             if file_id:
-                logger.info(f"文件保存成功: id={file_id}, filename={filename}")
+                logger.info(f"文件保存成功: id={file_id}, filename={safe_filename} (original={filename})")
                 return await self.get_file(file_id)
             
             return None

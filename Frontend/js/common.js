@@ -122,6 +122,68 @@ function setUrlParams(params) {
     window.history.pushState({}, '', url);
 }
 
+/**
+ * 统一的Toast提示
+ * @param {string} message - 提示消息
+ * @param {string} type - 类型: success, error, warning, info
+ */
+function showToast(message, type = 'info') {
+    // 配置
+    const config = {
+        'success': { bg: 'bg-green-500', icon: 'fa-check-circle' },
+        'error': { bg: 'bg-red-500', icon: 'fa-exclamation-circle' },
+        'warning': { bg: 'bg-yellow-500', icon: 'fa-exclamation-triangle' },
+        'info': { bg: 'bg-blue-500', icon: 'fa-info-circle' }
+    };
+    
+    const { bg, icon } = config[type] || config.info;
+    
+    // 创建toast元素
+    const toast = document.createElement('div');
+    toast.className = `fixed top-4 right-4 ${bg} text-white px-6 py-4 rounded-lg shadow-lg z-50 flex items-center space-x-3 transition-all duration-300 transform`;
+    toast.style.minWidth = '280px';
+    toast.style.maxWidth = '420px';
+    
+    // 添加图标和消息
+    toast.innerHTML = `
+        <i class="fas ${icon} text-xl flex-shrink-0"></i>
+        <span class="font-medium flex-1">${escapeHtmlForToast(message)}</span>
+        <button class="ml-2 text-white hover:text-gray-200 transition-colors" onclick="this.parentElement.remove()">
+            <i class="fas fa-times"></i>
+        </button>
+    `;
+    
+    // 添加到页面并应用动画
+    document.body.appendChild(toast);
+    
+    // 初始状态（从右侧滑入）
+    toast.style.transform = 'translateX(400px)';
+    toast.style.opacity = '0';
+    
+    // 触发动画
+    setTimeout(() => {
+        toast.style.transform = 'translateX(0)';
+        toast.style.opacity = '1';
+    }, 10);
+    
+    // 3秒后自动移除
+    setTimeout(() => {
+        toast.style.transform = 'translateX(400px)';
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+/**
+ * 转义HTML（用于Toast）
+ */
+function escapeHtmlForToast(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 // 导出到全局
 window.utils = {
     formatFileSize,
@@ -131,5 +193,9 @@ window.utils = {
     copyToClipboard,
     downloadFile,
     getUrlParams,
-    setUrlParams
+    setUrlParams,
+    showToast
 };
+
+// 同时导出showToast为全局函数（向后兼容）
+window.showToast = showToast;

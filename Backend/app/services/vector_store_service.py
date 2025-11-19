@@ -8,6 +8,9 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 全局单例实例
+_vector_store_service_instance = None
+
 
 class VectorStoreService:
     """向量存储服务（ChromaDB）"""
@@ -287,3 +290,12 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"获取向量失败: {str(e)}")
             raise
+
+
+def get_vector_store_service():
+    """获取 VectorStoreService 单例（避免重复创建 ChromaDB 客户端）"""
+    global _vector_store_service_instance
+    if _vector_store_service_instance is None:
+        _vector_store_service_instance = VectorStoreService()
+        logger.info("[SINGLETON] VectorStoreService 单例已创建")
+    return _vector_store_service_instance

@@ -46,11 +46,22 @@ class FileConfig(BaseModel):
     upload_dir: str = str(BASE_DIR / "KnowledgeBase")
 
 
+class SemanticSplitConfig(BaseModel):
+    """语义分割配置"""
+    enabled: bool = True
+    max_chunk_size: int = 800
+    min_chunk_size: int = 200
+    ollama_model: str = "deepseek-v3.1:671b-cloud"
+    use_for_short_text: bool = True
+    short_text_threshold: int = 5000
+
+
 class TextProcessingConfig(BaseModel):
     """文本处理配置"""
-    chunk_size: int = 500
-    chunk_overlap: int = 50
+    chunk_size: int = 800
+    chunk_overlap: int = 100
     separators: List[str] = ["\n\n", "\n", "。", "！", "？"]
+    semantic_split: SemanticSplitConfig = SemanticSplitConfig()
 
 
 class VectorDBConfig(BaseModel):
@@ -150,6 +161,15 @@ def load_config() -> Settings:
             config_obj = getattr(settings, key)
             for k, v in value.items():
                 if hasattr(config_obj, k):
+                    # 处理嵌套配置对象（如 semantic_split）
+                    if isinstance(v, dict) and hasattr(config_obj, k):
+                        nested_obj = getattr(config_obj, k)
+                        if hasattr(nested_obj, '__dict__'):  # 确保是配置对象
+                            for nested_k, nested_v in v.items():
+                                if hasattr(nested_obj, nested_k):
+                                    setattr(nested_obj, nested_k, nested_v)
+                            continue
+                    
                     # 处理路径配置:将相对路径转换为绝对路径
                     # 支持两种格式: "Models" 或 "../Models" (都相对于BASE_DIR)
                     if k in ['local_models_dir', 'upload_dir', 'persist_directory', 'model_dir', 'file']:

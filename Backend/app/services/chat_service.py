@@ -137,7 +137,8 @@ class ChatService:
     async def _release_embedding_memory(self):
         """释放embedding模型显存"""
         try:
-            from app.services.embedding_service import embedding_service
+            from app.services.embedding_service import get_embedding_service
+            embedding_service = get_embedding_service()
             embedding_service.unload_model()
             import torch
             if torch.cuda.is_available():
@@ -188,7 +189,7 @@ class ChatService:
                     kb_ids=kb_ids,
                     query=query,
                     top_k=top_k,
-                    score_threshold=0.3
+                    score_threshold=0.2  # 降低阈值，0.2表示弱相关也会被保留
                 )
                 
                 # 获取第一个知识库的embedding_model
@@ -310,8 +311,9 @@ class ChatService:
         # 根据provider调用不同的LLM
         try:
             if llm_provider in ['local', 'transformers']:
-                # 调用Transformers本地推理
-                from app.services.transformers_service import transformers_service
+                # 调用Transformers本地推理（使用延迟加载）
+                from app.services.transformers_service import get_transformers_service
+                transformers_service = get_transformers_service()
                 
                 model_name = llm_model if llm_model else 'Qwen3-8B'
                 logger.info(f"调用Transformers模型: {model_name}, 历史消息: {len(history_messages) if history_messages else 0}条, 完整messages数量: {len(messages)}")
@@ -389,7 +391,7 @@ class ChatService:
                     kb_ids=kb_ids,
                     query=query,
                     top_k=top_k,
-                    score_threshold=0.3
+                    score_threshold=0.2  # 降低阈值
                 )
                 
                 kb = await self.kb_service.get_knowledge_base(kb_ids[0])
@@ -476,7 +478,9 @@ class ChatService:
         
         try:
             if llm_provider in ['local', 'transformers']:
-                from app.services.transformers_service import transformers_service
+                # 使用延迟加载获取transformers_service
+                from app.services.transformers_service import get_transformers_service
+                transformers_service = get_transformers_service()
                 
                 model_name = llm_model if llm_model else 'Qwen3-8B'
                 logger.info(f"调用Transformers模型（流式）: {model_name}, 历史消息: {len(history_messages) if history_messages else 0}条, 完整messages数量: {len(messages)}")

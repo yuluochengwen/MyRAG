@@ -64,10 +64,21 @@ function setupEventListeners() {
 // ==================== 数据加载 ====================
 
 async function loadAssistants() {
-    const response = await fetch(`${API_BASE_URL}/api/assistants`);
-    if (!response.ok) throw new Error('加载助手列表失败');
-    assistants = await response.json();
-    renderAssistants();
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/assistants`);
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || '加载助手列表失败');
+        }
+        assistants = await response.json();
+        console.log('助手列表加载成功:', assistants.length);
+        renderAssistants();
+    } catch (error) {
+        console.error('加载助手列表失败:', error);
+        showMessage('加载助手列表失败: ' + error.message, 'error');
+        assistants = [];
+        renderAssistants();
+    }
 }
 
 async function loadKnowledgeBases() {
@@ -107,7 +118,12 @@ async function loadPromptTemplates() {
 
 function renderAssistants() {
     const grid = document.getElementById('assistantsGrid');
-    if (!grid) return;
+    if (!grid) {
+        console.error('找不到 assistantsGrid 元素');
+        return;
+    }
+    
+    console.log('渲染助手列表:', assistants.length);
     
     // 图标映射
     const iconMap = {
@@ -128,7 +144,7 @@ function renderAssistants() {
             </div>
             <h3 class="text-lg font-bold mb-2">创建智能助手</h3>
             <p class="text-gray-500 mb-4">配置知识库和模型，创建专属AI助手</p>
-            <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom">
+            <button type="button" class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom">
                 立即创建
             </button>
         </div>
@@ -211,7 +227,9 @@ function renderAssistants() {
         `;
     });
     
+    console.log('[RENDER] 准备更新DOM, 助手数量:', assistants.length);
     grid.innerHTML = html;
+    console.log('[RENDER] DOM更新完成');
 }
 
 function renderKnowledgeBaseOptions() {
@@ -412,6 +430,8 @@ async function handleCreateAssistant(e) {
     };
     
     try {
+        console.log('[CREATE] 开始创建智能助手:', data);
+        
         const response = await fetch(`${API_BASE_URL}/api/assistants`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -423,10 +443,24 @@ async function handleCreateAssistant(e) {
             throw new Error(error.detail || '创建失败');
         }
         
-        showMessage('智能助手创建成功！', 'success');
+        const result = await response.json();
+        console.log('[CREATE] 创建成功:', result);
+        
+        // 关闭模态框
+        console.log('[CREATE] 关闭模态框');
         closeCreateModal();
+        
+        // 显示成功消息
+        console.log('[CREATE] 显示成功消息');
+        showMessage('智能助手创建成功！', 'success');
+        
+        // 重新加载助手列表
+        console.log('[CREATE] 开始重新加载助手列表');
         await loadAssistants();
+        console.log('[CREATE] 助手列表加载完成');
+        
     } catch (error) {
+        console.error('[CREATE] 创建失败:', error);
         showMessage('创建失败: ' + error.message, 'error');
     }
 }
@@ -488,18 +522,36 @@ async function deleteAssistant(id, event) {
         event.stopPropagation();
     }
     
-    if (!confirm('确定要删除这个助手吗？')) return;
+    if (!confirm('确定要删除这个助手吗？')) {
+        console.log('[DELETE] 用户取消删除');
+        return;
+    }
     
     try {
+        console.log('[DELETE] 开始删除智能助手:', id);
+        
         const response = await fetch(`${API_BASE_URL}/api/assistants/${id}`, {
             method: 'DELETE'
         });
         
-        if (!response.ok) throw new Error('删除失败');
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || '删除失败');
+        }
         
+        console.log('[DELETE] 删除成功:', id);
+        
+        // 显示成功消息
+        console.log('[DELETE] 显示成功消息');
         showMessage('助手已删除', 'success');
+        
+        // 重新加载助手列表
+        console.log('[DELETE] 开始重新加载助手列表');
         await loadAssistants();
+        console.log('[DELETE] 助手列表加载完成');
+        
     } catch (error) {
+        console.error('[DELETE] 删除失败:', error);
         showMessage('删除失败: ' + error.message, 'error');
     }
 }
@@ -694,20 +746,9 @@ function showLoading(show) {
     console.log('Loading:', show);
 }
 
+// 使用统一的Toast提示（定义在common.js中）
 function showMessage(message, type = 'info') {
-    // 简单的消息提示
-    const colors = {
-        'success': 'bg-green-500',
-        'error': 'bg-red-500',
-        'info': 'bg-blue-500'
-    };
-    
-    const div = document.createElement('div');
-    div.className = `fixed top-4 right-4 ${colors[type]} text-white px-6 py-3 rounded shadow-lg z-50`;
-    div.textContent = message;
-    document.body.appendChild(div);
-    
-    setTimeout(() => div.remove(), 3000);
+    showToast(message, type);
 }
 
 // ==================== 搜索功能 ====================

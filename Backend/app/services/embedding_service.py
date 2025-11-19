@@ -17,8 +17,8 @@ def get_ollama_service():
     """获取Ollama服务实例（延迟导入）"""
     global _ollama_service
     if _ollama_service is None:
-        from app.services.ollama_embedding_service import ollama_embedding_service
-        _ollama_service = ollama_embedding_service
+        from app.services.ollama_embedding_service import get_ollama_embedding_service
+        _ollama_service = get_ollama_embedding_service()
     return _ollama_service
 
 
@@ -143,8 +143,10 @@ class EmbeddingService:
             show_progress: 是否显示进度
             
         Returns:
-            向量列表
+            向量列表（已归一化）
         """
+        import numpy as np
+        
         model = self.load_model(model_name)
         
         # 编码
@@ -152,7 +154,8 @@ class EmbeddingService:
             texts,
             batch_size=batch_size,
             show_progress_bar=show_progress,
-            convert_to_numpy=True
+            convert_to_numpy=True,
+            normalize_embeddings=True  # 强制归一化
         )
         
         # 转换为列表
@@ -334,6 +337,16 @@ class EmbeddingService:
             logger.error(f"卸载模型失败: {str(e)}")
 
 
-# 全局单例
-embedding_service = EmbeddingService()
+# 延迟加载单例（避免启动时加载torch/CUDA）
+_embedding_service_instance = None
+
+def get_embedding_service() -> EmbeddingService:
+    """获取EmbeddingService单例（延迟加载）
+    
+    首次调用时才初始化，避免Windows多进程启动时的CUDA冲突
+    """
+    global _embedding_service_instance
+    if _embedding_service_instance is None:
+        _embedding_service_instance = EmbeddingService()
+    return _embedding_service_instance
 

@@ -511,6 +511,9 @@ async function uploadFile(kbId) {
         const formData = new FormData();
         formData.append('file', file);
         
+        // 显示处理提示
+        showNotification('正在处理文件...', 'info');
+        
         try {
             const response = await fetch(
                 `${API_BASE_URL}/knowledge-bases/${kbId}/upload?client_id=${wsClient.clientId}`,
@@ -527,7 +530,8 @@ async function uploadFile(kbId) {
             
             const result = await response.json();
             
-            showNotification(result.message, 'success');
+            // 注意：实际的成功消息会由 WebSocket 的 handleComplete 显示
+            // showNotification(result.message, 'success');
             
         } catch (error) {
             console.error('上传文件失败:', error);
@@ -598,37 +602,10 @@ function handleSearch(e) {
 }
 
 /**
- * 显示通知
+ * 显示通知（使用统一的Toast提示）
  */
 function showNotification(message, type = 'info') {
-    // 创建通知元素
-    const notification = document.createElement('div');
-    notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-50 flex items-center space-x-3 animate-slide-in`;
-    
-    // 根据类型设置样式和图标
-    const config = {
-        'success': { bg: 'bg-success', icon: 'fa-check-circle' },
-        'error': { bg: 'bg-danger', icon: 'fa-exclamation-circle' },
-        'warning': { bg: 'bg-warning', icon: 'fa-exclamation-triangle' },
-        'info': { bg: 'bg-primary', icon: 'fa-info-circle' }
-    };
-    
-    const { bg, icon } = config[type] || config.info;
-    notification.className += ` ${bg} text-white`;
-    
-    notification.innerHTML = `
-        <i class="fa ${icon} text-xl"></i>
-        <span class="font-medium">${escapeHtml(message)}</span>
-    `;
-    
-    document.body.appendChild(notification);
-    
-    // 3秒后自动移除
-    setTimeout(() => {
-        notification.style.opacity = '0';
-        notification.style.transform = 'translateX(100%)';
-        setTimeout(() => notification.remove(), 300);
-    }, 3000);
+    showToast(message, type);
 }
 
 /**
@@ -765,9 +742,9 @@ async function viewFiles(kbId, event) {
             content.innerHTML = '<p class="text-center text-gray-500 py-8">暂无文件</p>';
         } else {
             content.innerHTML = files.map(file => `
-                <div class="p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-custom cursor-pointer" onclick="viewFileContent(${kbId}, ${file.id}, '${escapeHtml(file.filename)}')">
+                <div class="p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-custom">
                     <div class="flex items-center justify-between">
-                        <div class="flex-1">
+                        <div class="flex-1 cursor-pointer" onclick="viewFileContent(${kbId}, ${file.id}, '${escapeHtml(file.filename)}')">
                             <div class="flex items-center space-x-2 mb-2">
                                 <i class="fa fa-file-o text-blue-500"></i>
                                 <span class="font-medium hover:text-primary">${escapeHtml(file.filename)}</span>
@@ -779,6 +756,14 @@ async function viewFiles(kbId, event) {
                                 <span class="ml-3 text-xs text-primary">点击查看内容 →</span>
                             </div>
                         </div>
+                        <button 
+                            onclick="deleteFile(${kbId}, ${file.id}, '${escapeHtml(file.filename)}', event)" 
+                            class="ml-4 px-3 py-2 bg-red-500 hover:bg-red-600 text-white text-sm rounded-lg transition-colors flex items-center space-x-1"
+                            title="删除文件"
+                        >
+                            <i class="fas fa-trash-alt"></i>
+                            <span>删除</span>
+                        </button>
                     </div>
                 </div>
             `).join('');
@@ -789,6 +774,42 @@ async function viewFiles(kbId, event) {
     } catch (error) {
         console.error('加载文件列表失败:', error);
         alert('加载文件列表失败: ' + error.message);
+    }
+}
+
+/**
+ * 删除文件
+ */
+async function deleteFile(kbId, fileId, filename, event) {
+    event.stopPropagation();
+    
+    // 确认对话框
+    if (!confirm(`确定要删除文件 "${filename}" 吗？\n\n删除后将无法恢复，相关的文本块和向量数据也会被删除。`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/files/${fileId}`, {
+            method: 'DELETE'
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || '删除失败');
+        }
+        
+        const result = await response.json();
+        showNotification(result.message, 'success');
+        
+        // 重新加载文件列表
+        await viewFiles(kbId, event);
+        
+        // 重新加载知识库列表以更新统计信息
+        await loadKnowledgeBases();
+        
+    } catch (error) {
+        console.error('删除文件失败:', error);
+        showNotification('删除文件失败: ' + error.message, 'error');
     }
 }
 

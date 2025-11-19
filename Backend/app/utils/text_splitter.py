@@ -184,69 +184,6 @@ class TextSplitter:
         
         return result
     
-    def analyze_chunks(self, chunks: List[str]) -> Dict[str, Any]:
-        """
-        分析chunk质量
-        
-        Args:
-            chunks: 文本块列表
-        
-        Returns:
-            分析结果字典
-        """
-        if not chunks:
-            return {
-                "total_chunks": 0,
-                "total_length": 0,
-                "avg_length": 0,
-                "min_length": 0,
-                "max_length": 0,
-                "quality_score": 0
-            }
-        
-        lengths = [len(c) for c in chunks]
-        
-        # 检查边界质量（是否在句子边界）
-        boundary_quality = 0
-        for chunk in chunks:
-            chunk_stripped = chunk.rstrip()
-            if chunk_stripped and chunk_stripped.endswith(('。', '！', '？', '.', '!', '?', '\n', ':', '：')):
-                boundary_quality += 1
-        
-        boundary_quality_ratio = boundary_quality / len(chunks) if chunks else 0
-        
-        # 计算长度方差（越小越好，说明分块均匀）
-        avg_length = sum(lengths) / len(lengths)
-        variance = sum((l - avg_length) ** 2 for l in lengths) / len(lengths)
-        length_uniformity = 1.0 / (1.0 + variance / avg_length) if avg_length > 0 else 0
-        
-        # 综合质量分数（0-100）
-        quality_score = (boundary_quality_ratio * 0.6 + length_uniformity * 0.4) * 100
-        
-        return {
-            "total_chunks": len(chunks),
-            "total_length": sum(lengths),
-            "avg_length": avg_length,
-            "min_length": min(lengths),
-            "max_length": max(lengths),
-            "length_variance": variance,
-            "boundary_quality": f"{boundary_quality}/{len(chunks)} ({boundary_quality_ratio:.1%})",
-            "length_uniformity": f"{length_uniformity:.2f}",
-            "quality_score": f"{quality_score:.1f}/100",
-            "recommendation": self._get_recommendation(boundary_quality_ratio, length_uniformity)
-        }
-    
-    def _get_recommendation(self, boundary_ratio: float, uniformity: float) -> str:
-        """根据分析结果给出建议"""
-        if boundary_ratio > 0.8 and uniformity > 0.7:
-            return "✅ 分块质量优秀，无需调整"
-        elif boundary_ratio < 0.5:
-            return "⚠️  边界质量较差，建议检查文档格式或调整分隔符"
-        elif uniformity < 0.5:
-            return "⚠️  块大小不均匀，建议调整chunk_size或chunk_overlap"
-        else:
-            return "ℹ️  分块质量良好，可根据实际效果微调"
-    
     def _fallback_split(self, text: str) -> List[str]:
         """
         降级分割方案（当 LangChain 失败时使用）
@@ -267,16 +204,3 @@ class TextSplitter:
         
         logger.info(f"降级分割完成: 块数={len(chunks)}")
         return chunks
-    
-    def count_chunks(self, text: str) -> int:
-        """
-        计算文本会被分割成多少个块
-        
-        Args:
-            text: 文本
-            
-        Returns:
-            块数量
-        """
-        chunks = self.split_text(text)
-        return len(chunks)

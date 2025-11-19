@@ -345,8 +345,8 @@ class KnowledgeBaseService:
                 raise ValueError(f"知识库不存在: {kb_id}")
             
             # 2. 使用知识库的嵌入模型编码查询
-            from app.services.embedding_service import EmbeddingService
-            embedding_service = EmbeddingService()
+            from app.services.embedding_service import get_embedding_service
+            embedding_service = get_embedding_service()
             
             logger.info(f"使用嵌入模型 {kb.embedding_model} (provider={kb.embedding_provider}) 编码查询")
             query_vector = embedding_service.encode_single(
@@ -356,8 +356,8 @@ class KnowledgeBaseService:
             )
             
             # 3. 向量检索
-            from app.services.vector_store_service import VectorStoreService
-            vector_store = VectorStoreService()
+            from app.services.vector_store_service import get_vector_store_service
+            vector_store = get_vector_store_service()
             collection_name = f"kb_{kb_id}"
             
             results = vector_store.search(
@@ -367,54 +367,32 @@ class KnowledgeBaseService:
             )
             
             # 4. 格式化返回结果并获取文件信息
-            formatted_results = []
-            if results['ids'] and len(results['ids']) > 0:
-                distances = results['distances'][0]
-                
-                # 批量获取所有涉及的文件信息
-                file_ids = set()
-                for metadata in results.get('metadatas', [[]])[0]:
+            # 批量获取所有涉及的文件信息
+            file_ids = set()
+            if results.get('metadatas') and len(results['metadatas']) > 0:
+                for metadata in results['metadatas'][0]:
                     if metadata and 'file_id' in metadata:
                         file_ids.add(int(metadata['file_id']))
-                
-                # 查询文件名映射
-                file_info_map = {}
-                if file_ids:
-                    try:
-                        placeholders = ','.join(['%s'] * len(file_ids))
-                        file_query = f"SELECT id, filename FROM files WHERE id IN ({placeholders})"
-                        file_rows = await self.db.execute_query(file_query, tuple(file_ids))
-                        file_info_map = {row['id']: row['filename'] for row in file_rows}
-                    except Exception as e:
-                        logger.warning(f"获取文件信息失败: {e}")
-                
-                for i, doc_id in enumerate(results['ids'][0]):
-                    distance = distances[i]
-                    
-                    # ChromaDB使用L2距离，转换为余弦相似度近似值
-                    # 使用指数衰减：距离0→相似度1.0, 距离越大相似度越低
-                    import math
-                    similarity = math.exp(-distance / 2.0)
-                    
-                    # 应用阈值过滤
-                    if similarity < score_threshold:
-                        continue
-                    
-                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
-                    file_id = int(metadata.get('file_id', 0))
-                    
-                    formatted_results.append({
-                        'chunk_id': doc_id,
-                        'content': results['documents'][0][i],
-                        'similarity': round(similarity, 4),
-                        'metadata': {
-                            'kb_id': int(metadata.get('kb_id', kb_id)),
-                            'file_id': file_id,
-                            'filename': file_info_map.get(file_id, '未知文件'),
-                            'chunk_index': int(metadata.get('chunk_index', 0))
-                        },
-                        '_distance': round(distance, 4)  # 调试用，保留原始距离
-                    })
+            
+            # 查询文件名映射
+            file_info_map = {}
+            if file_ids:
+                try:
+                    placeholders = ','.join(['%s'] * len(file_ids))
+                    file_query = f"SELECT id, filename FROM files WHERE id IN ({placeholders})"
+                    file_rows = await self.db.execute_query(file_query, tuple(file_ids))
+                    file_info_map = {row['id']: row['filename'] for row in file_rows}
+                except Exception as e:
+                    logger.warning(f"获取文件信息失败: {e}")
+            
+            # 使用公共函数格式化结果
+            from app.utils.similarity import format_search_results
+            formatted_results = format_search_results(
+                results=results,
+                file_info_map=file_info_map,
+                kb_id=kb_id,
+                score_threshold=score_threshold
+            )
             
             logger.info(f"检索完成: kb_id={kb_id}, 查询='{query}', "
                        f"结果数={len(formatted_results)}, 模型={kb.embedding_model}")
