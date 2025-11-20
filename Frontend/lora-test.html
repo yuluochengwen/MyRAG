@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoRA 推理测试 - MyRAG</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        .card-shadow {
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        .transition-custom {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .response-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            font-family: 'Consolas', 'Monaco', monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        
+        .loading-dots::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Header -->
+    <header class="gradient-bg text-white py-6 shadow-lg">
+        <div class="container mx-auto px-6">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <i class="fas fa-vial text-3xl"></i>
+                    <div>
+                        <h1 class="text-2xl font-bold">LoRA 推理测试</h1>
+                        <p class="text-sm opacity-90">测试训练好的 LoRA 模型</p>
+                    </div>
+                </div>
+                <a href="model-management.html" class="px-4 py-2 bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg transition-custom">
+                    <i class="fas fa-arrow-left mr-2"></i>返回模型管理
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-6 py-8">
+        <!-- Model Selection -->
+        <div class="bg-white rounded-xl p-6 card-shadow mb-6">
+            <h2 class="text-xl font-bold mb-4 flex items-center">
+                <i class="fas fa-cube text-purple-600 mr-3"></i>
+                选择 LoRA 模型
+            </h2>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">LoRA 模型</label>
+                    <select id="loraModelSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent">
+                        <option value="">加载中...</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">基座模型</label>
+                    <input id="baseModelDisplay" type="text" readonly 
+                           class="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-600" 
+                           placeholder="选择 LoRA 模型后自动显示">
+                </div>
+            </div>
+            
+            <div id="modelInfo" class="mt-4 p-4 bg-blue-50 rounded-lg hidden">
+                <div class="flex items-start">
+                    <i class="fas fa-info-circle text-blue-600 mt-1 mr-3"></i>
+                    <div class="flex-1">
+                        <p class="text-sm text-gray-700" id="modelInfoText"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Test Input -->
+        <div class="bg-white rounded-xl p-6 card-shadow mb-6">
+            <h2 class="text-xl font-bold mb-4 flex items-center">
+                <i class="fas fa-keyboard text-green-600 mr-3"></i>
+                测试输入
+            </h2>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">提示词 (Prompt)</label>
+                    <textarea id="promptInput" 
+                              class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent" 
+                              rows="4" 
+                              placeholder="输入测试提示词...例如: 解释什么是人工智能"></textarea>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Max Tokens
+                            <span class="text-xs text-gray-500">(最大生成长度)</span>
+                        </label>
+                        <input id="maxTokensInput" type="number" value="256" min="1" max="2048" 
+                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Temperature
+                            <span class="text-xs text-gray-500">(创造性 0-1)</span>
+                        </label>
+                        <input id="temperatureInput" type="number" value="0.7" min="0" max="1" step="0.1" 
+                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
+                    </div>
+                </div>
+            </div>
+            
+            <button id="testButton" 
+                    onclick="testLoRAInference()" 
+                    class="mt-4 w-full md:w-auto px-8 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg hover:shadow-lg transition-custom font-medium">
+                <i class="fas fa-play mr-2"></i>
+                开始测试
+            </button>
+        </div>
+
+        <!-- Test Result -->
+        <div id="resultContainer" class="bg-white rounded-xl p-6 card-shadow hidden">
+            <h2 class="text-xl font-bold mb-4 flex items-center">
+                <i class="fas fa-chart-line text-blue-600 mr-3"></i>
+                测试结果
+            </h2>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">模型响应</label>
+                    <div id="responseBox" class="response-box p-4 rounded-lg"></div>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="p-4 bg-gray-50 rounded-lg">
+                        <div class="text-sm text-gray-600 mb-1">推理时间</div>
+                        <div id="inferenceTime" class="text-lg font-bold text-gray-900">-</div>
+                    </div>
+                    
+                    <div class="p-4 bg-gray-50 rounded-lg">
+                        <div class="text-sm text-gray-600 mb-1">生成长度</div>
+                        <div id="responseLength" class="text-lg font-bold text-gray-900">-</div>
+                    </div>
+                    
+                    <div class="p-4 bg-gray-50 rounded-lg">
+                        <div class="text-sm text-gray-600 mb-1">模型状态</div>
+                        <div id="modelStatus" class="text-lg font-bold text-green-600">✓ 正常</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+            <div class="bg-white rounded-xl p-8 text-center">
+                <div class="animate-spin text-5xl text-purple-600 mb-4">
+                    <i class="fas fa-spinner"></i>
+                </div>
+                <p class="text-lg font-medium text-gray-700">正在推理<span class="loading-dots"></span></p>
+                <p class="text-sm text-gray-500 mt-2">这可能需要几秒钟</p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        let loraModels = [];
+        let selectedModel = null;
+
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            loadLoRAModels();
+            
+            // 监听模型选择变化
+            document.getElementById('loraModelSelect').addEventListener('change', (e) => {
+                const modelId = parseInt(e.target.value);
+                selectedModel = loraModels.find(m => m.id === modelId);
+                
+                if (selectedModel) {
+                    document.getElementById('baseModelDisplay').value = selectedModel.base_model;
+                    document.getElementById('modelInfo').classList.remove('hidden');
+                    document.getElementById('modelInfoText').textContent = 
+                        `模型: ${selectedModel.model_name} | 状态: ${selectedModel.is_deployed ? '已激活' : '未激活'} | 大小: ${selectedModel.file_size_mb.toFixed(2)} MB`;
+                }
+            });
+        });
+
+        // 加载 LoRA 模型列表
+        async function loadLoRAModels() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/lora/models`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    loraModels = data.models;
+                    
+                    const select = document.getElementById('loraModelSelect');
+                    select.innerHTML = '<option value="">请选择 LoRA 模型</option>';
+                    
+                    // 只显示已激活的模型
+                    const activeModels = loraModels.filter(m => m.is_deployed);
+                    
+                    if (activeModels.length === 0) {
+                        select.innerHTML = '<option value="">暂无已激活的模型</option>';
+                        showMessage('提示: 请先在模型管理页面激活 LoRA 模型', 'warning');
+                        return;
+                    }
+                    
+                    activeModels.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = `${model.model_name} (${model.file_size_mb.toFixed(1)} MB)`;
+                        select.appendChild(option);
+                    });
+                } else {
+                    showMessage('加载模型列表失败: ' + data.message, 'error');
+                }
+            } catch (error) {
+                console.error('加载模型列表失败:', error);
+                showMessage('加载模型列表失败', 'error');
+            }
+        }
+
+        // 测试 LoRA 推理
+        async function testLoRAInference() {
+            if (!selectedModel) {
+                showMessage('请先选择一个 LoRA 模型', 'warning');
+                return;
+            }
+            
+            const prompt = document.getElementById('promptInput').value.trim();
+            if (!prompt) {
+                showMessage('请输入测试提示词', 'warning');
+                return;
+            }
+            
+            const maxTokens = parseInt(document.getElementById('maxTokensInput').value);
+            const temperature = parseFloat(document.getElementById('temperatureInput').value);
+            
+            showLoading(true);
+            const startTime = Date.now();
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/lora/models/${selectedModel.id}/test`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model_id: selectedModel.id,
+                        prompt: prompt,
+                        max_tokens: maxTokens,
+                        temperature: temperature
+                    })
+                });
+                
+                const data = await response.json();
+                const endTime = Date.now();
+                const inferenceTime = ((endTime - startTime) / 1000).toFixed(2);
+                
+                if (data.success) {
+                    // 显示结果
+                    document.getElementById('resultContainer').classList.remove('hidden');
+                    document.getElementById('responseBox').textContent = data.response;
+                    document.getElementById('inferenceTime').textContent = `${inferenceTime} 秒`;
+                    document.getElementById('responseLength').textContent = `${data.response.length} 字符`;
+                    document.getElementById('modelStatus').textContent = '✓ 正常';
+                    
+                    showMessage('推理成功!', 'success');
+                } else {
+                    showMessage('推理失败: ' + (data.detail || '未知错误'), 'error');
+                }
+            } catch (error) {
+                console.error('推理失败:', error);
+                showMessage('推理失败: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 显示加载状态
+        function showLoading(show) {
+            const overlay = document.getElementById('loadingOverlay');
+            const button = document.getElementById('testButton');
+            
+            if (show) {
+                overlay.classList.remove('hidden');
+                button.disabled = true;
+                button.classList.add('opacity-50', 'cursor-not-allowed');
+            } else {
+                overlay.classList.add('hidden');
+                button.disabled = false;
+                button.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        // 显示消息
+        function showMessage(message, type = 'info') {
+            const colors = {
+                success: 'bg-green-500',
+                error: 'bg-red-500',
+                warning: 'bg-yellow-500',
+                info: 'bg-blue-500'
+            };
+            
+            const toast = document.createElement('div');
+            toast.className = `fixed top-4 right-4 ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 transition-custom`;
+            toast.textContent = message;
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

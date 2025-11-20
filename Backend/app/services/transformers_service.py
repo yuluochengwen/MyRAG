@@ -1,6 +1,6 @@
 """
 Transformers本地推理服务
-支持动态模型加载、流式输出、量化加速
+支持动态模型加载、流式输出、量化加速、LoRA适配器
 适配RTX 3060 6GB显存
 """
 import os
@@ -16,6 +16,7 @@ from transformers import (
     BitsAndBytesConfig,
     TextIteratorStreamer
 )
+from peft import PeftModel
 from threading import Thread
 from app.core.config import settings
 from app.utils.logger import logger
@@ -28,8 +29,10 @@ class TransformersService:
         self.current_model = None
         self.current_tokenizer = None
         self.current_model_name = None
+        self.current_lora_path = None  # 当前加载的 LoRA 路径
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.models_dir = Path(settings.llm.local_models_dir) / "LLM"
+        self.lora_dir = Path(settings.llm.local_models_dir) / "LoRA"
         
         # 6GB显存优化配置
         self.quantization_config = BitsAndBytesConfig(
@@ -45,6 +48,114 @@ class TransformersService:
             gpu_name = torch.cuda.get_device_name(0)
             gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
             logger.info(f"GPU: {gpu_name}, 显存: {gpu_memory:.1f}GB")
+    
+    def _estimate_model_size(self, model_path: Path) -> float:
+        """
+        估算 INT4 量化后的模型大小（GB）
+        
+        Args:
+            model_path: 模型目录路径
+            
+        Returns:
+            float: 估算的模型大小（GB）
+        """
+        try:
+            config_file = model_path / "config.json"
+            if config_file.exists():
+                with open(config_file) as f:
+                    config = json.load(f)
+                
+                # 从配置估算参数量
+                vocab_size = config.get("vocab_size", 32000)
+                hidden_size = config.get("hidden_size", 2048)
+                num_layers = config.get("num_hidden_layers", 24)
+                
+                # 粗略估算参数量（billion）
+                params_b = (vocab_size * hidden_size + 
+                           num_layers * hidden_size * hidden_size * 4) / 1e9
+                
+                # INT4: 0.5 bytes per parameter
+                size_gb = params_b * 0.5
+                return size_gb
+        except Exception as e:
+            logger.warning(f"无法从配置估算模型大小: {e}")
+        
+        # 降级：计算 safetensors 文件大小
+        try:
+            total_size = sum(
+                f.stat().st_size 
+                for f in model_path.rglob('*.safetensors')
+            ) / 1024**3
+            # INT4 约为原始大小的 1/4
+            return total_size * 0.25
+        except:
+            return 0.0
+    
+    def _post_process_response(self, response: str, model_name: str) -> str:
+        """
+        后处理模型输出，移除推理模型的思考过程
+        支持多种思考过程格式
+        
+        Args:
+            response: 原始模型输出
+            model_name: 模型名称
+            
+        Returns:
+            str: 处理后的输出
+        """
+        import re
+        
+        # 检测推理模型（DeepSeek-R1、R1-Distill 等）
+        is_reasoning_model = any(keyword in model_name.lower() 
+                                for keyword in ["deepseek-r1", "r1-distill", "-r1", "reasoning"])
+        
+        if is_reasoning_model:
+            # 方法 1: 移除各种思考过程标签
+            # <think>...</think>
+            response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+            # [思考]...[/思考]
+            response = re.sub(r'\[思考\].*?\[/思考\]', '', response, flags=re.DOTALL)
+            # <reasoning>...</reasoning>
+            response = re.sub(r'<reasoning>.*?</reasoning>', '', response, flags=re.DOTALL)
+            
+            # 方法 2: 如果有多段，保留最长的非思考段落
+            if '\n\n' in response:
+                parts = [p.strip() for p in response.split('\n\n') 
+                        if p.strip() and not any(p.strip().startswith(tag) 
+                                                for tag in ['<', '['])]
+                if parts:
+                    response = max(parts, key=len)
+            
+            # 清理多余空白
+            response = re.sub(r'\n{3,}', '\n\n', response).strip()
+        
+        return response
+    
+    def _inject_system_instruction(self, messages: List[Dict[str, str]], instruction: str) -> List[Dict[str, str]]:
+        """
+        将指令注入到 system 消息
+        
+        Args:
+            messages: 原始消息列表
+            instruction: 要注入的指令
+            
+        Returns:
+            List[Dict]: 注入后的消息列表
+        """
+        messages = messages.copy()
+        has_system = any(msg["role"] == "system" for msg in messages)
+        
+        if has_system:
+            # 追加到现有 system 消息
+            for msg in messages:
+                if msg["role"] == "system":
+                    msg["content"] = f"{msg['content']}\n\n{instruction}"
+                    break
+        else:
+            # 添加新的 system 消息
+            messages.insert(0, {"role": "system", "content": instruction})
+        
+        return messages
     
     async def load_model(self, model_name: str, quantize: bool = True) -> bool:
         """
@@ -103,15 +214,37 @@ class TransformersService:
                 "low_cpu_mem_usage": True,
             }
             
+            # 尝试启用 Flash Attention（如果可用）
+            try:
+                import flash_attn
+                load_kwargs["attn_implementation"] = "flash_attention_2"
+                logger.info("✓ Flash Attention 2 已启用")
+            except ImportError:
+                logger.info("Flash Attention 不可用，使用默认实现")
+            
             if quantize and self.device == "cuda":
                 load_kwargs["quantization_config"] = self.quantization_config
-                # 使用device_map="auto"，但限制只使用CUDA，不offload到CPU
-                load_kwargs["device_map"] = "auto"
-                load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}  # 限制CPU内存为0，强制全部在GPU
+                
+                # 估算模型大小，优化小模型加载
+                model_size_gb = self._estimate_model_size(model_path)
+                logger.info(f"估算模型大小: {model_size_gb:.2f} GB (INT4量化后)")
+                
+                if model_size_gb < 2.0:  # 小模型（< 2GB）
+                    logger.info("小模型检测，直接加载到 GPU（避免 device_map 开销）")
+                    load_kwargs["device_map"] = None  # 不使用 device_map
+                else:
+                    logger.info("大模型检测，使用 device_map=auto")
+                    load_kwargs["device_map"] = "auto"
+                    load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
             elif self.device == "cuda":
-                # 不量化时也使用device_map="auto"，但限制只使用CUDA
                 load_kwargs["device_map"] = "auto"
                 load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
+            
+            # 显存监控：加载前
+            if self.device == "cuda":
+                before_allocated = torch.cuda.memory_allocated(0) / 1024**3
+                before_reserved = torch.cuda.memory_reserved(0) / 1024**3
+                logger.info(f"加载前显存: {before_allocated:.2f}GB 已分配, {before_reserved:.2f}GB 已保留")
             
             self.current_model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
             
@@ -120,11 +253,19 @@ class TransformersService:
             
             self.current_model_name = model_name
             
-            # 显示显存使用
+            # 显示显存使用（加载后）
             if self.device == "cuda":
-                allocated = torch.cuda.memory_allocated(0) / 1024**3
-                reserved = torch.cuda.memory_reserved(0) / 1024**3
-                logger.info(f"显存使用: {allocated:.2f}GB 已分配, {reserved:.2f}GB 已保留")
+                after_allocated = torch.cuda.memory_allocated(0) / 1024**3
+                after_reserved = torch.cuda.memory_reserved(0) / 1024**3
+                delta_allocated = after_allocated - before_allocated
+                delta_reserved = after_reserved - before_reserved
+                logger.info(f"加载后显存: {after_allocated:.2f}GB 已分配 (+{delta_allocated:.2f}GB), "
+                           f"{after_reserved:.2f}GB 已保留 (+{delta_reserved:.2f}GB)")
+                
+                # 显存利用率
+                total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                utilization = (after_allocated / total_memory) * 100
+                logger.info(f"显存利用率: {utilization:.1f}% ({after_allocated:.2f}GB / {total_memory:.1f}GB)")
             
             logger.info(f"模型{model_name}加载成功")
             return True
@@ -134,6 +275,126 @@ class TransformersService:
             self.current_model = None
             self.current_tokenizer = None
             self.current_model_name = None
+            return False
+    
+    async def load_model_with_lora(
+        self, 
+        base_model: str, 
+        lora_path: str,
+        quantize: bool = True
+    ) -> bool:
+        """
+        加载基座模型并应用 LoRA 适配器
+        
+        Args:
+            base_model: 基座模型名称或路径
+            lora_path: LoRA 适配器路径
+            quantize: 是否启用INT4量化
+        
+        Returns:
+            bool: 加载成功返回True
+        """
+        try:
+            # 解析基座模型路径
+            if '\\' in base_model or '/' in base_model:
+                base_model_path = Path(base_model)
+            else:
+                base_model_path = self.models_dir / base_model
+            
+            if not base_model_path.exists():
+                raise FileNotFoundError(f"基座模型不存在: {base_model_path}")
+            
+            # 验证 LoRA 路径
+            lora_path_obj = Path(lora_path)
+            if not lora_path_obj.exists():
+                raise FileNotFoundError(f"LoRA 适配器不存在: {lora_path}")
+            
+            adapter_config = lora_path_obj / "adapter_config.json"
+            if not adapter_config.exists():
+                raise FileNotFoundError(f"adapter_config.json 不存在: {adapter_config}")
+            
+            logger.info(f"开始加载 LoRA 模型")
+            logger.info(f"基座模型: {base_model_path}")
+            logger.info(f"LoRA 适配器: {lora_path}")
+            logger.info(f"量化模式: {'INT4' if quantize else '无'}")
+            
+            # 如果已经加载了相同配置,跳过
+            if (self.current_model_name == str(base_model_path) and 
+                self.current_lora_path == lora_path):
+                logger.info("LoRA 模型已加载,跳过重复加载")
+                return True
+            
+            # 清理之前的模型
+            if self.current_model is not None:
+                logger.info(f"卸载旧模型: {self.current_model_name}")
+                del self.current_model
+                del self.current_tokenizer
+                torch.cuda.empty_cache()
+            
+            # 1. 加载 tokenizer
+            logger.info("加载 Tokenizer...")
+            try:
+                self.current_tokenizer = AutoTokenizer.from_pretrained(
+                    str(base_model_path),
+                    trust_remote_code=True,
+                    use_fast=True
+                )
+            except Exception as e:
+                logger.warning(f"Fast tokenizer 加载失败: {e}, 尝试 slow tokenizer")
+                self.current_tokenizer = AutoTokenizer.from_pretrained(
+                    str(base_model_path),
+                    trust_remote_code=True,
+                    use_fast=False
+                )
+            
+            # 2. 加载基座模型
+            logger.info("加载基座模型权重...")
+            load_kwargs = {
+                "pretrained_model_name_or_path": str(base_model_path),
+                "trust_remote_code": True,
+                "torch_dtype": torch.float16,
+                "low_cpu_mem_usage": True,
+            }
+            
+            if quantize and self.device == "cuda":
+                load_kwargs["quantization_config"] = self.quantization_config
+                load_kwargs["device_map"] = "auto"
+                load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
+            elif self.device == "cuda":
+                load_kwargs["device_map"] = "auto"
+                load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
+            
+            base_model_obj = AutoModelForCausalLM.from_pretrained(**load_kwargs)
+            
+            # 3. 加载 LoRA 适配器
+            logger.info("加载 LoRA 适配器...")
+            self.current_model = PeftModel.from_pretrained(
+                base_model_obj,
+                lora_path,
+                torch_dtype=torch.float16
+            )
+            
+            # 设置为评估模式
+            self.current_model.eval()
+            
+            self.current_model_name = str(base_model_path)
+            self.current_lora_path = lora_path
+            
+            # 显示显存使用
+            if self.device == "cuda":
+                allocated = torch.cuda.memory_allocated(0) / 1024**3
+                reserved = torch.cuda.memory_reserved(0) / 1024**3
+                logger.info(f"显存使用: {allocated:.2f}GB 已分配, {reserved:.2f}GB 已保留")
+            
+            logger.info("✅ LoRA 模型加载成功")
+            return True
+            
+        except Exception as e:
+            logger.error(f"加载 LoRA 模型失败: {e}", exc_info=True)
+            self.current_model = None
+            self.current_tokenizer = None
+            self.current_model_name = None
+            self.current_lora_path = None
             return False
     
     async def chat(
@@ -242,6 +503,9 @@ class TransformersService:
                 skip_special_tokens=True
             )
             
+            # 后处理：移除思考过程
+            response = self._post_process_response(response, model_name)
+            
             # 显存回收
             if self.device == "cuda":
                 torch.cuda.empty_cache()
@@ -329,10 +593,17 @@ class TransformersService:
             thread = Thread(target=self.current_model.generate, kwargs=generation_kwargs)
             thread.start()
             
-            # 流式输出
+            # 流式输出（累积文本用于后处理）
             loop = asyncio.get_event_loop()
+            accumulated_text = ""
             for text_chunk in streamer:
                 await asyncio.sleep(0)  # 让出控制权
+                accumulated_text += text_chunk
+                # 实时后处理（移除可能的思考标签）
+                processed_chunk = self._post_process_response(accumulated_text, model)
+                if processed_chunk != accumulated_text:
+                    # 有变化，说明遇到了思考标签，重新生成输出
+                    accumulated_text = processed_chunk
                 yield text_chunk
             
             # 等待线程结束
@@ -350,10 +621,43 @@ class TransformersService:
     
     def _build_prompt(self, messages: List[Dict[str, str]]) -> str:
         """
-        构建模型输入prompt
-        支持多种对话模板
+        构建模型输入 Prompt（智能适配不同模型和任务）
+        
+        Args:
+            messages: 消息列表
+            
+        Returns:
+            str: 构建好的 prompt
         """
-        # 检测是否有apply_chat_template方法
+        # 检测模型类型
+        is_reasoning_model = (self.current_model_name and 
+                             any(k in self.current_model_name.lower() 
+                                 for k in ["deepseek-r1", "r1-distill", "-r1"]))
+        
+        # 为推理模型添加特殊指令
+        if is_reasoning_model:
+            # 检测任务类型（是否是 RAG 对话）
+            is_rag_task = any("根据" in msg.get("content", "") or 
+                            "文档" in msg.get("content", "") or
+                            "检索" in msg.get("content", "")
+                            for msg in messages if msg["role"] == "system")
+            
+            if is_rag_task:
+                # RAG 任务：强调使用文档内容
+                instruction = (
+                    "请直接给出最终答案，不要输出思考过程。"
+                    "严格基于检索到的文档内容回答，确保答案准确且有依据。"
+                )
+            else:
+                # 普通对话：强调简洁
+                instruction = (
+                    "请直接回答问题，不要输出思考过程。"
+                    "保持回答简洁、准确、自然。"
+                )
+            
+            messages = self._inject_system_instruction(messages, instruction)
+        
+        # 尝试使用 tokenizer 的 chat_template
         if hasattr(self.current_tokenizer, "apply_chat_template"):
             try:
                 return self.current_tokenizer.apply_chat_template(
@@ -362,9 +666,9 @@ class TransformersService:
                     add_generation_prompt=True
                 )
             except Exception as e:
-                logger.warning(f"apply_chat_template失败: {e}, 使用默认模板")
+                logger.warning(f"apply_chat_template 失败: {e}, 使用默认模板")
         
-        # 默认模板(适用于大多数模型)
+        # 默认模板
         prompt = ""
         for msg in messages:
             role = msg["role"]

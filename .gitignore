@@ -49,6 +49,9 @@ Models/Embedding/*
 Models/LoRA/*
 !Models/LLM/Modelfile.template
 
+# LLaMA-Factory Training Workspace
+LLaMA-Training/
+
 # Knowledge Base Files (用户上传的文件)
 KnowledgeBase/*/files/
 KnowledgeBase/*/info.json

@@ -84,12 +84,12 @@ websocket:
 # LLM配置
 llm:
   default_provider: "transformers"  # transformers, openai, azure
-  default_model: "DeepSeek-OCR-3B"  # 默认模型名称(6GB显存使用更小的3B模型)
+  default_model: "Qwen2.5-3B-Instruct"  # 默认模型（对话专用，质量优先）
   local_models_dir: "Models"  # 本地模型根目录(包含LLM/和Embedding/), 相对于项目根目录
   transformers_quantization: "int4"  # 量化方式: int4(最省显存), int8, fp16
   transformers_max_memory: 5.5  # 最大显存使用(GB), RTX 3060 6GB建议5.5
-  temperature: 0.7
-  max_tokens: 512  # 降低到512以加快生成速度(CPU offload时很慢)
+  temperature: 0.5  # 默认温度参数（0.5 质量与创造性平衡）
+  max_tokens: 256  # 默认最大 tokens（从 512 降至 256，提升速度）
 
 # Neo4j配置
 neo4j:
@@ -143,3 +143,10 @@ database:
   max_overflow: 20
   pool_recycle: 3600
   echo: false
+
+# LoRA训练配置
+lora:
+  enabled: true
+  web_ui_port: 7860
+  models_dir: "Models/LoRA"  # 相对于项目根目录
+  log_dir: "logs/lora_training"  # 日志目录

@@ -640,3 +640,368 @@ function escapeHtml(text) {
 }
 
 // formatDateTime 和 debounce 函数由 common.js 提供
+
+// ==================== LoRA 训练服务管理 ====================
+
+let serviceCheckInterval = null;
+
+// 启动训练服务
+async function startTrainingService() {
+    const btn = document.getElementById('startTrainingBtn');
+    const originalHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i> 启动中...';
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/lora/service/start`, {
+            method: 'POST'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showMessage('训练平台启动成功！正在等待服务就绪...', 'success');
+            updateServiceStatus();
+            startServiceMonitoring();
+        } else {
+            showMessage(data.message, 'error');
+        }
+    } catch (error) {
+        showMessage('启动失败: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+    }
+}
+
+// 停止训练服务
+async function stopTrainingService() {
+    if (!confirm('确定要停止训练平台吗？这将关闭 LLaMA-Factory Web UI。')) return;
+    
+    const btn = document.getElementById('stopTrainingBtn');
+    const originalHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i>';
+    
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/lora/service/stop`, {
+            method: 'POST'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showMessage('训练平台已停止', 'success');
+            updateServiceStatus();
+            stopServiceMonitoring();
+        } else {
+            showMessage(data.message, 'error');
+        }
+    } catch (error) {
+        showMessage('停止失败: ' + error.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+    }
+}
+
+// 打开训练界面
+function openTrainingUI() {
+    window.open('http://localhost:7860', '_blank');
+    showMessage('已在新标签页打开训练界面', 'info');
+}
+
+// 更新服务状态
+async function updateServiceStatus() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/lora/service/status`);
+        const status = await response.json();
+        
+        const dot = document.getElementById('statusDot');
+        const text = document.getElementById('statusText');
+        const startBtn = document.getElementById('startTrainingBtn');
+        const openBtn = document.getElementById('openTrainingUIBtn');
+        const stopBtn = document.getElementById('stopTrainingBtn');
+        
+        if (status.running) {
+            // 服务运行中
+            dot.className = 'w-3 h-3 rounded-full bg-green-500 animate-pulse';
+            text.textContent = '运行中';
+            text.className = 'text-sm text-green-600 font-medium';
+            
+            startBtn.classList.add('hidden');
+            openBtn.classList.remove('hidden');
+            stopBtn.classList.remove('hidden');
+        } else {
+            // 服务未运行
+            dot.className = 'w-3 h-3 rounded-full bg-gray-400';
+            text.textContent = '未运行';
+            text.className = 'text-sm text-gray-600';
+            
+            startBtn.classList.remove('hidden');
+            openBtn.classList.add('hidden');
+            stopBtn.classList.add('hidden');
+        }
+    } catch (error) {
+        console.error('获取服务状态失败:', error);
+    }
+}
+
+// 开始监控服务
+function startServiceMonitoring() {
+    if (serviceCheckInterval) return;
+    serviceCheckInterval = setInterval(updateServiceStatus, 5000); // 每5秒检查一次
+}
+
+// 停止监控服务
+function stopServiceMonitoring() {
+    if (serviceCheckInterval) {
+        clearInterval(serviceCheckInterval);
+        serviceCheckInterval = null;
+    }
+}
+
+// ==================== LoRA 模型管理 ====================
+
+// 扫描新模型
+async function scanLoRAModels() {
+    showLoading(true);
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/lora/models/scan`, {
+            method: 'POST'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            if (data.count > 0) {
+                showMessage(`发现 ${data.count} 个新模型`, 'success');
+            } else {
+                showMessage('没有发现新模型', 'info');
+            }
+            await loadLoRAModels();
+        } else {
+            showMessage(data.message || '扫描失败', 'error');
+        }
+    } catch (error) {
+        showMessage('扫描失败: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+// 加载 LoRA 模型列表
+async function loadLoRAModels() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/lora/models`);
+        const data = await response.json();
+        
+        if (data.success) {
+            loraModels = data.models || [];
+            renderLoRAModels(loraModels);
+        } else {
+            throw new Error(data.message || '加载失败');
+        }
+    } catch (error) {
+        console.error('加载 LoRA 模型失败:', error);
+        const container = document.getElementById('loraModelsList');
+        if (container) {
+            container.innerHTML = `
+                <div class="text-center py-12 text-red-400">
+                    <i class="fa fa-exclamation-triangle text-5xl mb-4"></i>
+                    <p>加载失败: ${error.message}</p>
+                </div>
+            `;
+        }
+    }
+}
+
+// 渲染 LoRA 模型列表
+function renderLoRAModels(models) {
+    const container = document.getElementById('loraModelsList');
+    
+    if (!models || models.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-12 text-gray-400">
+                <i class="fa fa-folder-open text-5xl mb-4"></i>
+                <p class="text-lg mb-2">暂无 LoRA 模型</p>
+                <p class="text-sm">点击"启动训练平台"开始训练，或点击"扫描新模型"发现已有模型</p>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = models.map(model => {
+        const statusInfo = getStatusInfo(model.status);
+        const createdDate = new Date(model.created_at).toLocaleString('zh-CN');
+        
+        return `
+            <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-custom bg-white">
+                <div class="flex items-start justify-between">
+                    <div class="flex-1">
+                        <div class="flex items-center space-x-3 mb-2">
+                            <div class="w-10 h-10 rounded-lg ${statusInfo.bgClass} flex items-center justify-center flex-shrink-0">
+                                <i class="fa fa-cogs ${statusInfo.iconClass}"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <h4 class="font-bold text-gray-800 truncate">${escapeHtml(model.model_name)}</h4>
+                                <span class="px-2 py-1 text-xs rounded-full ${statusInfo.badgeClass} inline-block">
+                                    ${statusInfo.text}
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <div class="text-sm text-gray-600 space-y-1 ml-13">
+                            <div class="flex items-center">
+                                <i class="fa fa-cube text-gray-400 w-5"></i>
+                                <span>基座: ${escapeHtml(model.base_model)}</span>
+                            </div>
+                            <div class="flex items-center">
+                                <i class="fa fa-database text-gray-400 w-5"></i>
+                                <span>大小: ${model.file_size_mb.toFixed(2)} MB</span>
+                            </div>
+                            ${model.lora_rank ? `
+                                <div class="flex items-center">
+                                    <i class="fa fa-sliders text-gray-400 w-5"></i>
+                                    <span>Rank: ${model.lora_rank} / Alpha: ${model.lora_alpha || 'N/A'}</span>
+                                </div>
+                            ` : ''}
+                            <div class="flex items-center">
+                                <i class="fa fa-clock-o text-gray-400 w-5"></i>
+                                <span>创建: ${createdDate}</span>
+                            </div>
+                            ${model.is_deployed ? `
+                                <div class="flex items-center text-green-600">
+                                    <i class="fa fa-check-circle w-5"></i>
+                                    <span>已激活</span>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    
+                    <div class="flex flex-col space-y-2 ml-4 flex-shrink-0">
+                        ${model.is_deployed ? `
+                            <button onclick="window.location.href='lora-test.html'" 
+                                    class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-custom text-sm whitespace-nowrap">
+                                <i class="fa fa-vial mr-1"></i> 测试推理
+                            </button>
+                        ` : ''}
+                        
+                        ${!model.is_deployed ? `
+                            <button onclick="activateLoRAModel(${model.id})" 
+                                    class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-custom text-sm whitespace-nowrap">
+                                <i class="fa fa-play mr-1"></i> 激活
+                            </button>
+                        ` : `
+                            <button disabled
+                                    class="px-4 py-2 bg-gray-100 text-gray-400 rounded cursor-not-allowed text-sm whitespace-nowrap">
+                                <i class="fa fa-check mr-1"></i> 已激活
+                            </button>
+                        `}
+                        
+                        <button onclick="deleteLoRAModel(${model.id})" 
+                                class="px-3 py-2 bg-red-100 text-red-600 rounded hover:bg-red-200 transition-custom text-sm">
+                            <i class="fa fa-trash"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 激活 LoRA 模型
+async function activateLoRAModel(modelId) {
+    if (!confirm('确定要激活此 LoRA 模型吗？激活后可用于推理。')) return;
+    
+    showLoading(true);
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/lora/models/${modelId}/activate`, {
+            method: 'POST'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showMessage(`LoRA 模型激活成功！模型名: ${data.model_name}`, 'success');
+            await loadLoRAModels();
+        } else {
+            showMessage('激活失败: ' + data.message, 'error');
+        }
+    } catch (error) {
+        showMessage('激活失败: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+// 删除 LoRA 模型
+async function deleteLoRAModel(modelId) {
+    if (!confirm('确定要删除此模型吗？此操作不可恢复！\n\n如果模型正在被助手使用，将无法删除。')) return;
+    
+    showLoading(true);
+    try {
+        const response = await fetch(`${API_BASE_URL}/api/lora/models/${modelId}`, {
+            method: 'DELETE'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showMessage('模型已删除', 'success');
+            await loadLoRAModels();
+        } else {
+            if (data.in_use) {
+                showMessage(`无法删除: ${data.message}\n\n提示: 您可以先解除助手与此模型的关联`, 'error');
+            } else {
+                showMessage('删除失败: ' + data.message, 'error');
+            }
+        }
+    } catch (error) {
+        showMessage('删除失败: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+// 获取状态信息
+function getStatusInfo(status) {
+    const statusMap = {
+        'discovered': {
+            text: '已发现',
+            badgeClass: 'bg-blue-100 text-blue-700',
+            bgClass: 'bg-blue-100',
+            iconClass: 'text-blue-500'
+        },
+        'active': {
+            text: '已激活',
+            badgeClass: 'bg-green-100 text-green-700',
+            bgClass: 'bg-green-100',
+            iconClass: 'text-green-500'
+        },
+        'failed': {
+            text: '失败',
+            badgeClass: 'bg-red-100 text-red-700',
+            bgClass: 'bg-red-100',
+            iconClass: 'text-red-500'
+        }
+    };
+    
+    return statusMap[status] || statusMap['discovered'];
+}
+
+// ==================== 页面初始化扩展 ====================
+
+// 修改原有的 DOMContentLoaded 事件，添加 LoRA 初始化
+document.addEventListener('DOMContentLoaded', async () => {
+    setupEventListeners();
+    await loadAllModels();
+    
+    // 初始化 LoRA 相关
+    await updateServiceStatus();
+    await loadLoRAModels();
+    
+    // 检查服务状态，如果运行中则开始监控
+    const statusResponse = await fetch(`${API_BASE_URL}/api/lora/service/status`).catch(() => null);
+    if (statusResponse) {
+        const status = await statusResponse.json();
+        if (status.running) {
+            startServiceMonitoring();
+        }
+    }
+});

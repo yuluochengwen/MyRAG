@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简易 LoRA 训练 - RAG 系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .training-progress {
+            background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .8; }
+        }
+        
+        .upload-zone {
+            border: 2px dashed #cbd5e1;
+            transition: all 0.3s;
+        }
+        
+        .upload-zone:hover {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+        
+        .upload-zone.dragover {
+            border-color: #3b82f6;
+            background-color: #dbeafe;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- 导航栏 -->
+    <nav class="bg-white shadow-md">
+        <div class="container mx-auto px-6 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <a href="/static/knowledge-base.html" class="text-gray-600 hover:text-blue-600">知识库</a>
+                    <a href="/static/chat.html" class="text-gray-600 hover:text-blue-600">聊天</a>
+                    <a href="/static/intelligent-assistant.html" class="text-gray-600 hover:text-blue-600">智能助手</a>
+                    <a href="/static/model-management.html" class="text-gray-600 hover:text-blue-600">模型管理</a>
+                    <span class="text-blue-600 font-semibold border-b-2 border-blue-600 pb-1">
+                        <i class="fas fa-brain mr-2"></i>简易 LoRA 训练
+                    </span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mx-auto px-6 py-8">
+        <!-- 面包屑导航 -->
+        <div class="mb-4">
+            <a href="model-management.html" class="text-gray-600 hover:text-blue-600 flex items-center">
+                <i class="fas fa-arrow-left mr-2"></i> 返回模型管理
+            </a>
+        </div>
+        
+        <!-- 标题 -->
+        <div class="mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">
+                <i class="fas fa-magic mr-3 text-blue-600"></i>简易 LoRA 微调
+            </h1>
+            <p class="text-gray-600">只需上传数据集和选择基座模型，其余自动处理</p>
+        </div>
+
+        <!-- 主内容区 -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- 左侧：训练配置 -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-sliders-h mr-2 text-blue-600"></i>训练配置
+                    </h2>
+
+                    <!-- 步骤 1: 上传数据集 -->
+                    <div class="mb-6">
+                        <h3 class="font-semibold text-gray-700 mb-2">步骤 1: 上传训练数据集</h3>
+                        
+                        <!-- 上传区域 -->
+                        <div id="uploadZone" class="upload-zone rounded-lg p-8 text-center cursor-pointer">
+                            <i class="fas fa-cloud-upload-alt text-5xl text-gray-400 mb-3"></i>
+                            <p class="text-gray-600 mb-2">拖拽 JSON 文件到此处，或点击选择文件</p>
+                            <p class="text-sm text-gray-500">支持 Alpaca 和 ShareGPT 格式</p>
+                            <input type="file" id="fileInput" accept=".json,.jsonl" class="hidden">
+                        </div>
+
+                        <!-- 数据集类型选择 -->
+                        <div class="mt-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">数据集格式</label>
+                            <select id="datasetType" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option value="alpaca">Alpaca 格式 (instruction, input, output)</option>
+                                <option value="sharegpt">ShareGPT 格式 (conversations)</option>
+                            </select>
+                        </div>
+
+                        <!-- 已上传的数据集 -->
+                        <div id="uploadedDataset" class="mt-4 hidden">
+                            <div class="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg p-3">
+                                <div class="flex items-center">
+                                    <i class="fas fa-check-circle text-green-600 mr-2"></i>
+                                    <span id="datasetName" class="font-medium"></span>
+                                    <span id="datasetSize" class="text-sm text-gray-600 ml-2"></span>
+                                </div>
+                                <button onclick="clearDataset()" class="text-red-600 hover:text-red-800">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 步骤 2: 选择基座模型 -->
+                    <div class="mb-6">
+                        <h3 class="font-semibold text-gray-700 mb-2">步骤 2: 选择基座模型</h3>
+                        <select id="baseModel" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                            <option value="">加载中...</option>
+                        </select>
+                    </div>
+
+                    <!-- 步骤 3: 任务名称 -->
+                    <div class="mb-6">
+                        <h3 class="font-semibold text-gray-700 mb-2">步骤 3: 任务名称</h3>
+                        <input type="text" id="taskName" placeholder="例如: my_custom_lora" 
+                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                    </div>
+
+                    <!-- 训练参数说明 -->
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                        <h4 class="font-semibold text-blue-800 mb-2 flex items-center">
+                            <i class="fas fa-info-circle mr-2"></i>自动配置参数
+                        </h4>
+                        <div class="text-sm text-gray-700 space-y-1">
+                            <div class="flex justify-between">
+                                <span>LoRA Rank:</span>
+                                <span class="font-medium">16</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span>训练轮次:</span>
+                                <span class="font-medium">3 epochs</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span>批次大小:</span>
+                                <span class="font-medium">4 (有效 batch=16)</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span>学习率:</span>
+                                <span class="font-medium">2e-4</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span>量化:</span>
+                                <span class="font-medium">4-bit (QLoRA)</span>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-600 mt-2">※ 参数已针对 RTX 3060 6GB 显卡优化</p>
+                    </div>
+
+                    <!-- 开始训练按钮 -->
+                    <button id="startTrainingBtn" onclick="startTraining()" 
+                            class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fas fa-play mr-2"></i>开始训练
+                    </button>
+                </div>
+            </div>
+
+            <!-- 右侧：训练任务列表 -->
+            <div class="lg:col-span-1">
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-list-ul mr-2 text-blue-600"></i>训练任务
+                    </h2>
+
+                    <!-- 任务列表 -->
+                    <div id="tasksList" class="space-y-3">
+                        <!-- 动态加载 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/simple-lora-training.js"></script>
+</body>
+</html>

@@ -230,47 +230,69 @@ class ModelScanner:
     
     def scan_lora_models(self) -> List[Dict[str, any]]:
         """
-        扫描本地LoRA模型
+        扫描本地LoRA模型（包括 Models/LoRA 和 LLaMA-Training/saves）
         
         Returns:
             LoRA模型信息列表
         """
         models = []
         
-        if not self.lora_dir.exists():
-            return models
+        # 收集需要扫描的目录
+        scan_dirs = []
+        if self.lora_dir.exists():
+            scan_dirs.append(self.lora_dir)
         
-        for model_path in self.lora_dir.iterdir():
-            if not model_path.is_dir():
-                continue
+        # 添加 LLaMA-Training/saves 目录
+        training_saves = self.base_dir / "LLaMA-Training" / "saves"
+        if training_saves.exists():
+            scan_dirs.append(training_saves)
+        
+        # 扫描所有目录
+        for scan_dir in scan_dirs:
+            models.extend(self._scan_lora_directory(scan_dir))
+        
+        return models
+    
+    def _scan_lora_directory(self, base_dir: Path) -> List[Dict[str, any]]:
+        """
+        扫描单个 LoRA 目录（递归）
+        
+        Args:
+            base_dir: 要扫描的目录
             
-            # LoRA 模型可能有 adapter_config.json
-            config_file = model_path / "adapter_config.json"
-            if config_file.exists():
-                try:
-                    with open(config_file, 'r', encoding='utf-8') as f:
-                        config = json.load(f)
-                    
-                    # 获取模型大小
-                    size_bytes = self._get_folder_size(model_path)
-                    
-                    # 获取创建时间
-                    created_at = datetime.fromtimestamp(model_path.stat().st_ctime)
-                    
-                    models.append({
-                        "name": model_path.name,
-                        "path": str(model_path),
-                        "base_model": config.get("base_model_name_or_path", "Unknown"),
-                        "rank": config.get("r", "Unknown"),
-                        "lora_alpha": config.get("lora_alpha", "Unknown"),
-                        "target_modules": config.get("target_modules", []),
-                        "size": self._format_size(size_bytes),
-                        "size_bytes": size_bytes,
-                        "created_at": created_at.isoformat(),
-                        "status": "deployed"
-                    })
-                except Exception as e:
-                    print(f"Warning: Failed to read {config_file}: {e}")
+        Returns:
+            LoRA 模型列表
+        """
+        models = []
+        
+        # 递归查找所有 adapter_config.json
+        for config_file in base_dir.rglob("adapter_config.json"):
+            model_path = config_file.parent
+            # 读取 LoRA 配置
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                # 获取模型大小
+                size_bytes = self._get_folder_size(model_path)
+                
+                # 获取创建时间
+                created_at = datetime.fromtimestamp(model_path.stat().st_ctime)
+                
+                models.append({
+                    "name": model_path.name,
+                    "path": str(model_path),
+                    "base_model": config.get("base_model_name_or_path", "Unknown"),
+                    "rank": config.get("r", "Unknown"),
+                    "lora_alpha": config.get("lora_alpha", "Unknown"),
+                    "target_modules": config.get("target_modules", []),
+                    "size": self._format_size(size_bytes),
+                    "size_bytes": size_bytes,
+                    "created_at": created_at.isoformat(),
+                    "status": "deployed"
+                })
+            except Exception as e:
+                print(f"Warning: Failed to read {config_file}: {e}")
         
         return models
     

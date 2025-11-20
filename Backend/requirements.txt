@@ -34,6 +34,11 @@ transformers>=4.40.0
 bitsandbytes>=0.48.0  # 升级到0.48+以支持4-bit量化与device_map="auto"的配合
 accelerate>=0.25.0
 
+# LoRA 微调
+peft>=0.11.0
+datasets>=2.18.0
+trl>=0.8.0
+
 # 工具库
 pydantic==2.5.0
 pydantic-settings==2.1.0
@@ -46,6 +51,9 @@ loguru==0.7.2
 
 # 图数据库
 neo4j==5.15.0
+
+# 进程管理
+psutil>=5.9.0
 
 # 开发工具
 pytest==7.4.3

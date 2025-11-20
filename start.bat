@@ -30,10 +30,9 @@ echo.
 
 REM Check and install dependencies
 echo [2/4] Checking Python dependencies
-cd Backend
 
-REM Check if deps are ready
-if exist ".deps_ready" (
+REM Check if deps are ready (检查 Backend 目录)
+if exist "Backend\.deps_ready" (
     echo [OK] Dependencies ready (cached^)
     goto :deps_done
 )
@@ -42,27 +41,26 @@ REM Quick check for key packages
 python -c "import fastapi, uvicorn, torch" 2>nul
 if errorlevel 1 (
     echo [INFO] Installing dependencies (first run^)
-    pip install -r requirements.txt --quiet --no-warn-script-location
+    pip install -r Backend\requirements.txt --quiet --no-warn-script-location
     if errorlevel 1 (
         echo [ERROR] Failed to install dependencies
-        cd ..
         pause
         exit /b 1
     )
     echo [OK] Dependencies installed
-    type nul > .deps_ready
+    type nul > Backend\.deps_ready
     goto :deps_done
 )
 
 echo [OK] Dependencies ready
-type nul > .deps_ready
+type nul > Backend\.deps_ready
 
 :deps_done
 echo.
 
 REM Initialize database
 echo [3/4] Initializing database
-python scripts\init_db.py 2>nul
+python Backend\scripts\init_db.py 2>nul
 if errorlevel 1 (
     echo [WARNING] Database init skipped (may already initialized^)
 ) else (
@@ -86,9 +84,9 @@ echo Press Ctrl+C to stop
 echo ========================================
 echo.
 
-python main.py
+REM 在根目录启动，使用模块路径
+python -m uvicorn Backend.main:app --host 0.0.0.0 --port 8000
 
-cd ..
 echo.
 echo [INFO] Service stopped
 pause
