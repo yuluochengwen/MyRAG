@@ -118,8 +118,15 @@ async function handleFile(file) {
 // 清除数据集
 function clearDataset() {
     uploadedFile = null;
-    document.getElementById('uploadedDataset').classList.add('hidden');
-    document.getElementById('fileInput').value = '';
+    const datasetDiv = document.getElementById('uploadedDataset');
+    if (datasetDiv) {
+        datasetDiv.classList.add('hidden');
+    }
+    
+    const fileInput = document.getElementById('fileInput');
+    if (fileInput) {
+        fileInput.value = '';
+    }
 }
 
 // 加载基座模型列表
@@ -133,7 +140,7 @@ async function loadBaseModels() {
         
         data.models.forEach(model => {
             const option = document.createElement('option');
-            option.value = model.name;
+            option.value = model.value || model.name; // 优先使用 value (真实目录名)
             option.textContent = `${model.name} (${model.size_mb.toFixed(0)} MB)`;
             select.appendChild(option);
         });
@@ -195,10 +202,13 @@ async function startTraining() {
             throw new Error(data.detail || data.message || '创建训练任务失败');
         }
         
-        showToast(`训练任务已启动 (ID: ${data.task_id})`, 'success');
+        showToast(`训练任务已启动 (ID: ${data.task_id})，完成后请前往【模型管理】页面扫描LoRA模型`, 'info', 6000);
         
         // 重置表单
-        document.getElementById('taskName').value = '';
+        const taskNameInput = document.getElementById('taskName');
+        if (taskNameInput) {
+            taskNameInput.value = '';
+        }
         clearDataset();
         
         // 刷新任务列表
@@ -319,7 +329,7 @@ function stopPolling() {
 }
 
 // Toast 提示
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', duration = 3000) {
     const colors = {
         success: 'bg-green-600',
         error: 'bg-red-600',
@@ -327,14 +337,14 @@ function showToast(message, type = 'info') {
     };
     
     const toast = document.createElement('div');
-    toast.className = `fixed top-4 right-4 ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in`;
+    toast.className = `fixed top-4 right-4 ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in max-w-md`;
     toast.textContent = message;
     
     document.body.appendChild(toast);
     
     setTimeout(() => {
         toast.remove();
-    }, 3000);
+    }, duration);
 }
 
 // 页面卸载时停止轮询

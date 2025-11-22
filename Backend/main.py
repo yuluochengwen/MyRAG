@@ -34,8 +34,13 @@ async def lifespan(app: FastAPI):
                 cursor.execute("SELECT 1")
                 logger.info("数据库连接成功")
     except Exception as e:
-        logger.error(f"数据库连接失败: {str(e)}")
-        raise
+        logger.error("="*50)
+        logger.error("CRITICAL ERROR: Database Connection Failed")
+        logger.error(f"Error Details: {str(e)}")
+        logger.error("Please ensure MySQL is running and configuration is correct.")
+        logger.error("="*50)
+        # 不抛出异常，允许应用启动以便查看日志，但在使用相关功能时会报错
+        # raise 
     
     yield
     

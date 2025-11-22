@@ -124,17 +124,33 @@ class ModelScanner:
             
             # 检查是否存在 config.json (Hugging Face 模型标志)
             config_file = model_path / "config.json"
+            actual_model_path = model_path
+            model_name = model_path.name
+
+            # 增强：支持 Hugging Face 缓存结构 (snapshots/hash/config.json)
+            if not config_file.exists() and (model_path / "snapshots").exists():
+                snapshots_dir = model_path / "snapshots"
+                # 遍历 snapshots 下的目录，找到包含 config.json 的
+                for snapshot in snapshots_dir.iterdir():
+                    if snapshot.is_dir() and (snapshot / "config.json").exists():
+                        config_file = snapshot / "config.json"
+                        actual_model_path = snapshot
+                        # 尝试优化显示名称：移除 models-- 前缀
+                        if model_name.startswith("models--"):
+                            model_name = model_name.replace("models--", "").replace("--", "/")
+                        break
+
             if config_file.exists():
                 try:
                     with open(config_file, 'r', encoding='utf-8') as f:
                         config = json.load(f)
                     
                     # 获取模型大小
-                    size_bytes = self._get_folder_size(model_path)
+                    size_bytes = self._get_folder_size(actual_model_path)
                     
                     # 获取创建时间
-                    created_at = datetime.fromtimestamp(model_path.stat().st_ctime)
-                    modified_at = datetime.fromtimestamp(model_path.stat().st_mtime)
+                    created_at = datetime.fromtimestamp(actual_model_path.stat().st_ctime)
+                    modified_at = datetime.fromtimestamp(actual_model_path.stat().st_mtime)
                     
                     # 获取模型参数量（如果有）
                     params = None
@@ -142,7 +158,7 @@ class ModelScanner:
                         params = config["num_parameters"]
                     else:
                         # 尝试从模型名称推断（如 Qwen3-8B）
-                        name_lower = model_path.name.lower()
+                        name_lower = model_name.lower()
                         if "8b" in name_lower:
                             params = "8B"
                         elif "7b" in name_lower:
@@ -155,8 +171,9 @@ class ModelScanner:
                             params = "1.5B"
                     
                     models.append({
-                        "name": model_path.name,
-                        "path": str(model_path),
+                        "name": model_name,
+                        "root_dir_name": model_path.name,  # 添加原始目录名，用于后端定位
+                        "path": str(actual_model_path),
                         "provider": "local",
                         "type": self._get_model_type(config),
                         "architecture": config.get("architectures", ["unknown"])[0] if config.get("architectures") else "unknown",

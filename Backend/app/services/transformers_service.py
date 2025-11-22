@@ -210,7 +210,7 @@ class TransformersService:
             load_kwargs = {
                 "pretrained_model_name_or_path": str(model_path),
                 "trust_remote_code": True,
-                "torch_dtype": torch.float16,
+                "dtype": torch.float16,
                 "low_cpu_mem_usage": True,
             }
             
@@ -352,7 +352,7 @@ class TransformersService:
             load_kwargs = {
                 "pretrained_model_name_or_path": str(base_model_path),
                 "trust_remote_code": True,
-                "torch_dtype": torch.float16,
+                "dtype": torch.float16,
                 "low_cpu_mem_usage": True,
             }
             
@@ -371,7 +371,7 @@ class TransformersService:
             self.current_model = PeftModel.from_pretrained(
                 base_model_obj,
                 lora_path,
-                torch_dtype=torch.float16
+                dtype=torch.float16
             )
             
             # 设置为评估模式
@@ -426,10 +426,17 @@ class TransformersService:
         # 非流式生成
         try:
             # 确保模型已加载
+            # 注意：如果已经加载了 LoRA 模型，不要重新加载基座模型
             if self.current_model_name != model:
-                success = await self.load_model(model)
-                if not success:
-                    raise RuntimeError(f"无法加载模型: {model}")
+                # 检查是否已加载同一基座模型的 LoRA
+                if self.current_lora_path is None:
+                    # 没有 LoRA，正常加载模型
+                    success = await self.load_model(model)
+                    if not success:
+                        raise RuntimeError(f"无法加载模型: {model}")
+                else:
+                    # 已加载 LoRA，检查基座模型是否匹配
+                    logger.info(f"已加载 LoRA 模型，基座: {self.current_model_name}, LoRA: {self.current_lora_path}")
             
             # 构建prompt
             prompt = self._build_prompt(messages)
@@ -504,7 +511,7 @@ class TransformersService:
             )
             
             # 后处理：移除思考过程
-            response = self._post_process_response(response, model_name)
+            response = self._post_process_response(response, model)
             
             # 显存回收
             if self.device == "cuda":
@@ -537,16 +544,23 @@ class TransformersService:
         """
         try:
             # 确保模型已加载
+            # 注意：如果已经加载了 LoRA 模型，不要重新加载基座模型
             if self.current_model_name != model:
-                success = await self.load_model(model)
-                if not success:
-                    raise RuntimeError(f"无法加载模型: {model}")
+                # 检查是否已加载同一基座模型的 LoRA
+                if self.current_lora_path is None:
+                    # 没有 LoRA，正常加载模型
+                    success = await self.load_model(model)
+                    if not success:
+                        raise RuntimeError(f"无法加载模型: {model}")
+                else:
+                    # 已加载 LoRA，检查基座模型是否匹配
+                    logger.info(f"已加载 LoRA 模型，基座: {self.current_model_name}, LoRA: {self.current_lora_path}")
             
             # 构建prompt
             prompt = self._build_prompt(messages)
             
             # 编码输入
-            logger.info(f"开始流式生成，prompt长度: {len(prompt)}")
+            logger.info(f"开始编码输入，prompt长度: {len(prompt)}")
             inputs = self.current_tokenizer(
                 prompt,
                 return_tensors="pt",

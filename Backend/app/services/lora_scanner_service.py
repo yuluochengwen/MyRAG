@@ -214,11 +214,57 @@ class LoRAScannerService:
             
             # 验证基座模型路径
             base_model = model['base_model']
+            base_model_path = None
+            
+            # 1. 尝试直接解析路径
             if '\\' in base_model or '/' in base_model:
-                base_model_path = Path(base_model)
-                if not base_model_path.exists():
-                    raise FileNotFoundError(f"基座模型不存在: {base_model_path}")
-                logger.info(f"✅ 基座模型验证通过: {base_model_path}")
+                temp_path = Path(base_model)
+                if temp_path.exists():
+                    base_model_path = temp_path
+            
+            # 2. 如果直接解析失败，尝试在本地模型目录查找
+            if not base_model_path:
+                # 提取模型名称（处理路径情况，如 Qwen/Qwen2.5-3B -> Qwen2.5-3B）
+                model_name_only = Path(base_model).name
+                
+                # 检查本地模型目录
+                # settings.llm.local_models_dir 通常是 "Models"
+                local_llm_dir = Path(settings.llm.local_models_dir) / "LLM"
+                potential_path = local_llm_dir / model_name_only
+                
+                if potential_path.exists():
+                    base_model_path = potential_path
+                    logger.info(f"在本地找到基座模型: {base_model_path} (原路径: {base_model})")
+                    
+                    # 如果原路径不正确，更新数据库
+                    # 注意：这里我们更新为绝对路径，确保后续加载无误
+                    if str(base_model_path) != str(base_model):
+                        try:
+                            with self.db.get_connection() as conn:
+                                with conn.cursor() as cursor:
+                                    cursor.execute(
+                                        "UPDATE lora_models SET base_model = %s WHERE id = %s",
+                                        (str(base_model_path), model_id)
+                                    )
+                                    conn.commit()
+                            logger.info(f"已更新数据库中的基座模型路径")
+                            # 更新本地变量，以便返回正确信息
+                            base_model = str(base_model_path)
+                            model['base_model'] = base_model
+                        except Exception as e:
+                            logger.warning(f"更新数据库基座模型路径失败: {e}")
+            
+            # 3. 如果还是没找到，且原值不含路径分隔符，尝试作为目录名在 LLM 目录下查找
+            if not base_model_path and not ('\\' in base_model or '/' in base_model):
+                local_llm_dir = Path(settings.llm.local_models_dir) / "LLM"
+                temp_path = local_llm_dir / base_model
+                if temp_path.exists():
+                    base_model_path = temp_path
+
+            if not base_model_path or not base_model_path.exists():
+                raise FileNotFoundError(f"基座模型不存在: {base_model} (已在 {settings.llm.local_models_dir}/LLM 中查找)")
+
+            logger.info(f"✅ 基座模型验证通过: {base_model_path}")
             
             # 更新数据库状态为已激活
             with self.db.get_connection() as conn:

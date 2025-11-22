@@ -49,11 +49,11 @@ class SimpleLoRATrainer:
     def get_default_params(self) -> Dict[str, Any]:
         """获取默认训练参数（针对 RTX 3060 6GB 优化）"""
         return {
-            # LoRA 参数
+            # LoRA 参数（target_modules 将在训练时自动检测）
             "lora_rank": 16,
             "lora_alpha": 32,
             "lora_dropout": 0.05,
-            "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj"],
+            "target_modules": "auto",  # 改为 auto，自动检测
             
             # 训练参数
             "num_epochs": 3,
@@ -69,6 +69,59 @@ class SimpleLoRATrainer:
             "logging_steps": 10,
             "save_steps": 100,
         }
+    
+    def _detect_target_modules(self, model) -> list:
+        """
+        自动检测模型的 attention 层名称（用于 LoRA）
+        
+        Args:
+            model: 加载的模型
+            
+        Returns:
+            target_modules 列表
+        """
+        # 常见的模型架构及其对应的 target_modules
+        architecture_mapping = {
+            "LlamaForCausalLM": ["q_proj", "v_proj", "k_proj", "o_proj"],
+            "QWenLMHeadModel": ["c_attn"],  # Qwen 1.x
+            "Qwen2ForCausalLM": ["q_proj", "v_proj", "k_proj", "o_proj"],  # Qwen 2.x
+            "ChatGLMModel": ["query_key_value"],
+            "BaichuanForCausalLM": ["W_pack"],
+            "InternLMForCausalLM": ["q_proj", "v_proj", "k_proj", "o_proj"],
+            "MistralForCausalLM": ["q_proj", "v_proj", "k_proj", "o_proj"],
+            "GPT2LMHeadModel": ["c_attn"],
+        }
+        
+        # 获取模型类型
+        model_type = model.__class__.__name__
+        logger.info(f"检测到模型类型: {model_type}")
+        
+        # 从预定义映射中获取
+        if model_type in architecture_mapping:
+            target_modules = architecture_mapping[model_type]
+            logger.info(f"使用预定义的 target_modules: {target_modules}")
+            return target_modules
+        
+        # 如果没有预定义，尝试自动检测
+        logger.info("未找到预定义映射，开始自动检测...")
+        
+        # 收集所有包含 "attn" 或 "attention" 的层名称
+        attention_layers = set()
+        for name, module in model.named_modules():
+            if any(keyword in name.lower() for keyword in ["attn", "attention", "query", "key", "value"]):
+                # 提取最后一个组件名称
+                layer_name = name.split('.')[-1]
+                if layer_name and not layer_name.startswith('_'):
+                    attention_layers.add(layer_name)
+        
+        if attention_layers:
+            target_modules = sorted(list(attention_layers))
+            logger.info(f"自动检测到的 attention 层: {target_modules}")
+            return target_modules
+        
+        # 如果还是检测不到，使用 LLaMA 默认值
+        logger.warning("无法自动检测，使用 LLaMA 默认值")
+        return ["q_proj", "v_proj", "k_proj", "o_proj"]
     
     async def create_training_task(
         self,
@@ -173,12 +226,21 @@ class SimpleLoRATrainer:
             
             # 3. 配置 LoRA
             self._update_task_status(task_id, 'running', progress=20.0, message="配置 LoRA...")
+            
+            # 自动检测 target_modules
+            target_modules = params.get('target_modules', 'auto')
+            if target_modules == 'auto' or not target_modules:
+                target_modules = self._detect_target_modules(model)
+                logger.info(f"自动检测的 target_modules: {target_modules}")
+            else:
+                logger.info(f"使用指定的 target_modules: {target_modules}")
+            
             lora_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
                 r=params['lora_rank'],
                 lora_alpha=params['lora_alpha'],
                 lora_dropout=params['lora_dropout'],
-                target_modules=params['target_modules'],
+                target_modules=target_modules,
                 bias="none"
             )
             
@@ -192,8 +254,18 @@ class SimpleLoRATrainer:
             self._update_task_status(task_id, 'running', progress=30.0, message="正在加载数据集...")
             train_dataset = self._load_dataset(task['dataset_file'], task['dataset_type'], tokenizer, params['max_seq_length'])
             
-            logger.info(f"数据集加载完成，样本数: {len(train_dataset)}")
-            self._update_task_status(task_id, 'running', progress=40.0, message=f"数据集加载完成 ({len(train_dataset)} 样本)")
+            dataset_size = len(train_dataset)
+            logger.info(f"数据集加载完成，样本数: {dataset_size}")
+            self._update_task_status(task_id, 'running', progress=40.0, message=f"数据集加载完成 ({dataset_size} 样本)")
+            
+            # 动态调整 Epoch (针对小数据集优化)
+            original_epochs = params['num_epochs']
+            if dataset_size < 200:
+                params['num_epochs'] = max(original_epochs, 15)  # 极小数据集：至少15轮
+                logger.info(f"检测到极小数据集 ({dataset_size} < 200)，自动将 Epoch 调整为 {params['num_epochs']}")
+            elif dataset_size < 1000:
+                params['num_epochs'] = max(original_epochs, 5)   # 小数据集：至少5轮
+                logger.info(f"检测到小数据集 ({dataset_size} < 1000)，自动将 Epoch 调整为 {params['num_epochs']}")
             
             # 5. 配置训练参数
             output_path = Path(task['output_path'])
@@ -234,21 +306,40 @@ class SimpleLoRATrainer:
             
             trainer.train()
             
-            # 8. 保存模型
-            self._update_task_status(task_id, 'running', progress=95.0, message="保存模型...")
-            trainer.save_model(str(output_path))
+            # 8. 保存 LoRA 适配器（重要：只保存 LoRA 权重，不保存完整模型）
+            self._update_task_status(task_id, 'running', progress=95.0, message="保存 LoRA 适配器...")
+            
+            # 保存 LoRA 适配器（使用 PEFT 的保存方法）
+            model.save_pretrained(str(output_path))
             tokenizer.save_pretrained(str(output_path))
             
-            logger.info(f"训练完成，模型已保存到: {output_path}")
+            # 验证保存的文件
+            adapter_config = output_path / "adapter_config.json"
+            adapter_model = output_path / "adapter_model.safetensors"
+            if not adapter_config.exists():
+                logger.warning(f"adapter_config.json 未找到，检查保存")
+            if not adapter_model.exists():
+                adapter_model_bin = output_path / "adapter_model.bin"
+                if not adapter_model_bin.exists():
+                    logger.error("LoRA 权重文件未保存！")
+            
+            logger.info(f"✅ LoRA 训练完成，适配器已保存到: {output_path}")
+            logger.info(f"   - adapter_config.json: {adapter_config.exists()}")
+            logger.info(f"   - adapter_model: {adapter_model.exists() or (output_path / 'adapter_model.bin').exists()}")
             
             # 9. 更新状态为完成
+            completion_message = f"训练完成！LoRA适配器已保存到: {output_path.name}"
             self._update_task_status(
                 task_id,
                 'completed',
                 progress=100.0,
                 current_epoch=params['num_epochs'],
-                message="训练完成"
+                message=completion_message
             )
+            
+            logger.info(f"====== 训练任务 {task_id} 完成 ======")
+            logger.info(f"输出路径: {output_path}")
+            logger.info(f"请前往【模型管理】页面扫描 LoRA 模型以使用")
             
         except Exception as e:
             logger.error(f"训练失败: {e}", exc_info=True)
@@ -259,56 +350,115 @@ class SimpleLoRATrainer:
             )
     
     def _load_dataset(self, dataset_file: str, dataset_type: str, tokenizer, max_length: int):
-        """加载并预处理数据集"""
+        """加载并预处理数据集（修复版：适配 Chat 模板 & 自动处理特殊 Token）"""
         dataset_path = Path(dataset_file)
         
-        if dataset_type == "alpaca":
-            # Alpaca 格式: {"instruction": "", "input": "", "output": ""}
-            dataset = load_dataset("json", data_files=str(dataset_path), split="train")
-            
-            def format_alpaca(example):
-                if example.get("input"):
-                    prompt = f"### Instruction:\n{example['instruction']}\n\n### Input:\n{example['input']}\n\n### Response:\n"
-                else:
-                    prompt = f"### Instruction:\n{example['instruction']}\n\n### Response:\n"
-                
-                text = prompt + example['output']
-                
-                tokenized = tokenizer(
-                    text,
-                    truncation=True,
-                    max_length=max_length,
-                    padding="max_length"
-                )
-                tokenized["labels"] = tokenized["input_ids"].copy()
-                return tokenized
-            
-            dataset = dataset.map(format_alpaca, remove_columns=dataset.column_names)
-            
-        elif dataset_type == "sharegpt":
-            # ShareGPT 格式: {"conversations": [{"from": "human", "value": ""}, {"from": "gpt", "value": ""}]}
-            dataset = load_dataset("json", data_files=str(dataset_path), split="train")
-            
-            def format_sharegpt(example):
-                text = ""
-                for conv in example['conversations']:
-                    role = "User" if conv['from'] == 'human' else "Assistant"
-                    text += f"{role}: {conv['value']}\n\n"
-                
-                tokenized = tokenizer(
-                    text,
-                    truncation=True,
-                    max_length=max_length,
-                    padding="max_length"
-                )
-                tokenized["labels"] = tokenized["input_ids"].copy()
-                return tokenized
-            
-            dataset = dataset.map(format_sharegpt, remove_columns=dataset.column_names)
-            
-        else:
-            raise ValueError(f"不支持的数据集类型: {dataset_type}")
+        # 1. 加载原始数据
+        dataset = load_dataset("json", data_files=str(dataset_path), split="train")
         
+        # 2. 定义格式化函数
+        def format_dataset(example):
+            # 将不同格式统一转换为 Messages 格式
+            messages = []
+            
+            if dataset_type == "alpaca":
+                # Alpaca: instruction + input -> User, output -> Assistant
+                user_content = example['instruction']
+                if example.get('input'):
+                    user_content += f"\n\n{example['input']}"
+                
+                messages = [
+                    {"role": "user", "content": user_content},
+                    {"role": "assistant", "content": example['output']}
+                ]
+                
+            elif dataset_type == "sharegpt":
+                # ShareGPT: 已经是对话格式，需要转换 role 名称
+                for conv in example['conversations']:
+                    role = "user" if conv['from'] == 'human' else "assistant"
+                    messages.append({"role": role, "content": conv['value']})
+            
+            # 3. 构建 Prompt 和 Full Text 以计算 Mask
+            # 这是关键：确保训练时的 Prompt 与推理时完全一致，且只对回答计算 Loss
+            try:
+                if hasattr(tokenizer, "apply_chat_template"):
+                    # A. 获取完整的对话文本
+                    full_text = tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=False
+                    )
+                    
+                    # B. 获取仅包含 Prompt 的文本 (用于计算 Mask 长度)
+                    # 假设最后一条是 Assistant 回复，我们需要 Mask 掉它之前的所有内容
+                    prompt_messages = messages[:-1] 
+                    prompt_text = tokenizer.apply_chat_template(
+                        prompt_messages,
+                        tokenize=False,
+                        add_generation_prompt=True # 添加生成提示符 (如 <|assistant|>)
+                    )
+                else:
+                    # 降级：使用通用格式 (User/Assistant)
+                    full_text = ""
+                    prompt_text = ""
+                    for i, msg in enumerate(messages):
+                        role = "User" if msg['role'] == 'user' else "Assistant"
+                        content = f"{role}: {msg['content']}\n\n"
+                        full_text += content
+                        if i < len(messages) - 1:
+                            prompt_text += content
+                    prompt_text += "Assistant: "
+            except Exception as e:
+                # 再次降级
+                full_text = ""
+                prompt_text = ""
+                for msg in messages:
+                    role = "User" if msg['role'] == 'user' else "Assistant"
+                    full_text += f"{role}: {msg['content']}\n\n"
+
+            # 4. Tokenize
+            # 自动添加特殊 token (BOS/EOS)
+            model_inputs = tokenizer(
+                full_text,
+                max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt"
+            )
+            
+            input_ids = model_inputs["input_ids"][0]
+            attention_mask = model_inputs["attention_mask"][0]
+            labels = input_ids.clone()
+            
+            # 5. 计算 Mask (Data Masking) - 关键修复
+            # 将 Prompt 部分的 Label 设为 -100，只让模型学习 Assistant 的回复
+            if prompt_text:
+                # Tokenize prompt 部分来获取长度
+                prompt_inputs = tokenizer(
+                    prompt_text,
+                    max_length=max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                    add_special_tokens=True # 保持一致
+                )
+                prompt_len = prompt_inputs["input_ids"].shape[1]
+                
+                # 确保不越界
+                if prompt_len < len(labels):
+                    labels[:prompt_len] = -100
+            
+            # 将 padding 部分的 label 设为 -100
+            if tokenizer.pad_token_id is not None:
+                labels[input_ids == tokenizer.pad_token_id] = -100
+                
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "labels": labels
+            }
+
+        # 3. 应用格式化
+        dataset = dataset.map(format_dataset, remove_columns=dataset.column_names)
         return dataset
     
     def _update_task_status(
