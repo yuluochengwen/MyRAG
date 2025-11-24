@@ -11,6 +11,7 @@ from app.api import kb_router, ws_router, assistant_router, conversation_router
 from app.api.models import router as models_router
 from app.api.lora_training import router as lora_router
 from app.api.simple_lora import router as simple_lora_router
+from app.api.agent import router as agent_router
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -73,6 +74,7 @@ app.include_router(conversation_router)
 app.include_router(models_router)
 app.include_router(lora_router)
 app.include_router(simple_lora_router)
+app.include_router(agent_router)
 
 # 挂载静态文件
 frontend_dir = BASE_DIR / "Frontend"

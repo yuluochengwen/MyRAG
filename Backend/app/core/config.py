@@ -51,7 +51,7 @@ class SemanticSplitConfig(BaseModel):
     enabled: bool = True
     max_chunk_size: int = 800
     min_chunk_size: int = 200
-    ollama_model: str = "deepseek-v3.1:671b-cloud"
+    ollama_model: str = "qwen2.5:7b"
     use_for_short_text: bool = True
     short_text_threshold: int = 5000
 
@@ -130,7 +130,7 @@ class Neo4jConfig(BaseModel):
 class EntityExtractionConfig(BaseModel):
     """实体提取配置"""
     provider: str = "ollama"
-    ollama_model: str = "deepseek-v3.1:671b-cloud"
+    ollama_model: str = "qwen2.5:7b"
     temperature: float = 0.1
     timeout: int = 60
     max_retries: int = 3
