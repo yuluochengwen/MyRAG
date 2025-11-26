@@ -9,6 +9,7 @@ pymysql==1.1.0
 aiomysql==0.2.0
 DBUtils==3.1.0
 cryptography==42.0.5
+neo4j>=5.15.0
 
 # 向量数据库
 chromadb>=1.3.5

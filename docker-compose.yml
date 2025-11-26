@@ -66,7 +66,7 @@ services:
       context: ./Backend
       dockerfile: Dockerfile
     container_name: myrag-backend
-    restart: always
+    restart: on-failure:5
     ports:
       - "8000:8000"
     volumes:
@@ -78,8 +78,8 @@ services:
     environment:
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
-      - MYSQL_USER=root
-      - MYSQL_PASSWORD=123456
+      - MYSQL_USER=myrag
+      - MYSQL_PASSWORD=myrag123
       - MYSQL_DATABASE=myrag
       - OLLAMA_BASE_URL=http://ollama:11434
       - NEO4J_URI=bolt://neo4j:7687

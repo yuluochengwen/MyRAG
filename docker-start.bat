@@ -24,20 +24,22 @@ echo 2. Stop all services
 echo 3. View service status
 echo 4. View logs
 echo 5. Download Ollama models
-echo 6. Rebuild and start
-echo 7. Clean all (including data)
-echo 8. Exit
+echo 6. Preload models (Ollama + HuggingFace)
+echo 7. Rebuild and start
+echo 8. Clean all (including data)
+echo 9. Exit
 echo.
-set /p choice=Enter option (1-8): 
+set /p choice=Enter option (1-9): 
 
 if "%choice%"=="1" goto start
 if "%choice%"=="2" goto stop
 if "%choice%"=="3" goto status
 if "%choice%"=="4" goto logs
 if "%choice%"=="5" goto ollama
-if "%choice%"=="6" goto rebuild
-if "%choice%"=="7" goto clean
-if "%choice%"=="8" goto end
+if "%choice%"=="6" goto preload_all
+if "%choice%"=="7" goto rebuild
+if "%choice%"=="8" goto clean
+if "%choice%"=="9" goto end
 echo [ERROR] Invalid option, please try again
 goto menu
 
@@ -147,6 +149,66 @@ if "%modelchoice%"=="7" goto menu
 echo.
 echo [RUN] Listing installed models
 docker exec myrag-ollama ollama list
+echo.
+pause
+goto menu
+
+:preload_all
+echo.
+echo ========================================
+echo Preload All Models (Ollama + HuggingFace)
+echo ========================================
+echo.
+echo This will download:
+echo   - Ollama: qwen2.5:1.5b (~1GB)
+echo   - Ollama: nomic-embed-text (~274MB)
+echo   - HuggingFace: paraphrase-multilingual-MiniLM-L12-v2 (~471MB)
+echo.
+echo Total download size: ~1.7GB
+echo This may take 10-30 minutes depending on your network speed.
+echo.
+set /p confirm=Continue? (Y/N): 
+if /i not "%confirm%"=="Y" goto menu
+
+echo.
+echo [STEP 1/2] Downloading Ollama models...
+echo ========================================
+docker exec myrag-ollama ollama pull qwen2.5:1.5b
+if %errorlevel% equ 0 (
+    echo [SUCCESS] qwen2.5:1.5b downloaded
+) else (
+    echo [WARNING] Failed to download qwen2.5:1.5b
+)
+
+docker exec myrag-ollama ollama pull nomic-embed-text
+if %errorlevel% equ 0 (
+    echo [SUCCESS] nomic-embed-text downloaded
+) else (
+    echo [WARNING] Failed to download nomic-embed-text
+)
+
+echo.
+echo [STEP 2/2] Downloading HuggingFace models...
+echo ========================================
+docker exec myrag-backend python /app/../scripts/preload-huggingface-models.py
+if %errorlevel% equ 0 (
+    echo [SUCCESS] HuggingFace models downloaded
+) else (
+    echo [WARNING] Failed to download HuggingFace models
+)
+
+echo.
+echo ========================================
+echo Model Preloading Completed!
+echo ========================================
+echo.
+echo Installed Ollama models:
+docker exec myrag-ollama ollama list
+echo.
+echo You can now use these models in your config.yaml:
+echo   - LLM: qwen2.5:1.5b
+echo   - Embedding (Ollama): nomic-embed-text
+echo   - Embedding (HuggingFace): paraphrase-multilingual-MiniLM-L12-v2
 echo.
 pause
 goto menu

@@ -1,5 +1,4 @@
 FROM python:3.11-slim
-FROM python:3.11-slim
 
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
@@ -36,8 +35,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p /app/KnowledgeBase /app/Models /app/VectorDB /app/logs
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/KnowledgeBase /app/Models /app/VectorDB /app/logs && \
+    chmod -R 777 /app/KnowledgeBase /app/Models /app/VectorDB /app/logs
+
+# Preload HuggingFace embedding model (optional, can be skipped for faster builds)
+# Uncomment the following line to preload models during build
+# RUN python /app/../scripts/preload-huggingface-models.py || echo "Model preload skipped"
 
 # Expose port
 EXPOSE 8000

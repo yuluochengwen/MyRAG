@@ -124,52 +124,105 @@ git checkout -b refactor/service-layer-v2
 
 #### T1.1 创建DeviceManager（2天）
 
+**核心职责**：统一管理CUDA/MPS/CPU设备、显存监控、显存清理
+
+**改进点**（基于可行性验证）：
+
+- ✅ 补充MPS支持（Apple Silicon）
+- ✅ 添加GPU名称查询方法
+- ✅ 完善设备初始化配置
+- ✅ 添加设备类型判断属性（is_cuda/is_mps/is_cpu）
+
 **代码示例**：
+
 ```python
 # Backend/app/core/device/gpu_manager.py
-from dataclasses import dataclass
 import torch
-from transformers import BitsAndBytesConfig
+from typing import Dict
+from app.utils.logger import get_logger
 
-@dataclass
-class DeviceInfo:
-    device_type: str  # cuda/cpu
-    device_name: str
-    total_memory_gb: float
-    allocated_memory_gb: float
-    reserved_memory_gb: float
+logger = get_logger(__name__)
 
 class DeviceManager:
-    """统一的CUDA设备管理"""
+    """设备管理器（支持CUDA/MPS/CPU）"""
     
     def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = self._detect_device()
+        self.device_name = self._get_device_name()
+        self._init_device_settings()
+        logger.info(f"设备初始化: {self.device} ({self.device_name})")
+        
+        if self.device == "cuda":
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            logger.info(f"GPU显存: {total_memory:.2f}GB")
     
-    def get_device_info(self) -> DeviceInfo:
-        """获取设备信息"""
-        if self.device == "cpu":
-            return DeviceInfo("cpu", "CPU", 0, 0, 0)
-        return DeviceInfo(
-            device_type="cuda",
-            device_name=torch.cuda.get_device_name(0),
-            total_memory_gb=torch.cuda.get_device_properties(0).total_memory / 1024**3,
-            allocated_memory_gb=torch.cuda.memory_allocated(0) / 1024**3,
-            reserved_memory_gb=torch.cuda.memory_reserved(0) / 1024**3
-        )
+    def _detect_device(self) -> str:
+        """检测可用设备（优先级：CUDA > MPS > CPU）"""
+        if torch.cuda.is_available():
+            return "cuda"
+        # Apple Silicon 支持
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
     
-    def get_quantization_config(self) -> BitsAndBytesConfig:
-        """获取INT4量化配置"""
-        return BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4"
-        )
+    def _get_device_name(self) -> str:
+        """获取设备名称"""
+        if self.device == "cuda":
+            return torch.cuda.get_device_name(0)
+        elif self.device == "mps":
+            return "Apple Silicon (MPS)"
+        return "CPU"
     
-    def clear_cache(self):
+    def _init_device_settings(self):
+        """初始化设备配置"""
+        if self.device == "cuda":
+            torch.backends.cudnn.benchmark = True
+    
+    def get_memory_info(self) -> Dict:
+        """获取显存/内存信息（GB）"""
+        if self.device == "cuda":
+            return {
+                "allocated_gb": torch.cuda.memory_allocated(0) / 1024**3,
+                "reserved_gb": torch.cuda.memory_reserved(0) / 1024**3,
+                "total_gb": torch.cuda.get_device_properties(0).total_memory / 1024**3,
+                "device_name": self.device_name
+            }
+        elif self.device == "mps":
+            return {"device_name": self.device_name}
+        return {"device_name": "CPU"}
+    
+    def cleanup(self):
         """清理显存缓存"""
         if self.device == "cuda":
             torch.cuda.empty_cache()
+    
+    def get_quantization_config(self):
+        """获取INT4量化配置（仅CUDA支持）"""
+        if self.device != "cuda":
+            return None
+        
+        from transformers import BitsAndBytesConfig
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True
+        )
+    
+    @property
+    def is_cuda(self) -> bool:
+        """是否为CUDA设备"""
+        return self.device == "cuda"
+    
+    @property
+    def is_mps(self) -> bool:
+        """是否为MPS设备（Apple Silicon）"""
+        return self.device == "mps"
+    
+    @property
+    def is_cpu(self) -> bool:
+        """是否为CPU设备"""
+        return self.device == "cpu"
 ```
 
 **测试代码**：
@@ -499,28 +552,83 @@ class TaskStateManager:
 
 #### T1.3 创建ModelLoader（3天）
 
+**核心职责**：统一模型加载、量化配置、LoRA合并、显存监控
+
+**改进点**（基于验证结果）：
+- ✅ 补充模型大小估算（决定加载策略）
+- ✅ 添加小模型优化（<2GB不使用device_map）
+- ✅ 支持Flash Attention检测
+- ✅ 完善Tokenizer容错（fast/slow降级）
+- ✅ 添加显存监控（加载前后对比）
+- ✅ 实现模型缓存管理（卸载旧模型）
+- ✅ 完善LoRA加载逻辑
+
 **代码示例**：
 ```python
 # Backend/app/core/model/model_loader.py
+import json
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 from app.core.device.gpu_manager import DeviceManager
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class ModelLoader:
     """统一的模型加载器（支持普通/量化/LoRA）"""
     
     def __init__(self, device_manager: DeviceManager):
         self.device_manager = device_manager
-        self.model_cache = {}  # 模型缓存
+        self.current_model = None
+        self.current_tokenizer = None
+        self.current_model_name = None
+    
+    def estimate_model_size(self, model_path: Path) -> float:
+        """
+        估算INT4量化后的模型大小（GB）
+        用于决定加载策略（小模型不使用device_map）
+        """
+        try:
+            # 方法1: 从config.json估算参数量
+            config_file = model_path / "config.json"
+            if config_file.exists():
+                with open(config_file) as f:
+                    config = json.load(f)
+                
+                vocab_size = config.get("vocab_size", 32000)
+                hidden_size = config.get("hidden_size", 2048)
+                num_layers = config.get("num_hidden_layers", 24)
+                
+                # 粗略估算参数量（billion）
+                params_b = (vocab_size * hidden_size + 
+                           num_layers * hidden_size * hidden_size * 4) / 1e9
+                
+                # INT4: 0.5 bytes per parameter
+                return params_b * 0.5
+        except Exception as e:
+            logger.warning(f"无法从config.json估算模型大小: {e}")
+        
+        try:
+            # 方法2: 计算safetensors文件大小
+            total_size = sum(
+                f.stat().st_size 
+                for f in model_path.rglob('*.safetensors')
+            ) / 1024**3
+            # INT4 约为原始大小的 1/4
+            return total_size * 0.25
+        except:
+            return 0.0
     
     async def load(
         self,
         model_path: Path,
         quantize: bool = True,
-        lora_path: Optional[Path] = None
-    ) -> Tuple:
+        lora_path: Optional[Path] = None,
+        enable_flash_attention: bool = True
+    ) -> Tuple[Any, Any]:
         """
         统一的加载入口
         
@@ -528,65 +636,144 @@ class ModelLoader:
             model_path: 模型路径
             quantize: 是否量化
             lora_path: LoRA路径（可选）
+            enable_flash_attention: 是否尝试启用Flash Attention
             
         Returns:
             (model, tokenizer)
         """
-        # 1. 加载tokenizer
+        # 1. 卸载旧模型
+        self._unload_current_model()
+        
+        # 2. 加载tokenizer
         tokenizer = self._load_tokenizer(model_path)
         
-        # 2. 加载基座模型
-        model = self._load_base_model(model_path, quantize)
+        # 3. 估算模型大小，决定加载策略
+        model_size_gb = self.estimate_model_size(model_path)
+        logger.info(f"估算模型大小: {model_size_gb:.2f} GB (INT4量化后)")
         
-        # 3. 应用LoRA（如果有）
+        # 4. 加载基座模型
+        model = self._load_base_model(
+            model_path, 
+            quantize, 
+            model_size_gb,
+            enable_flash_attention
+        )
+        
+        # 5. 应用LoRA（如果有）
         if lora_path:
             model = self._apply_lora(model, lora_path)
+        
+        # 6. 缓存当前模型
+        self.current_model = model
+        self.current_tokenizer = tokenizer
+        self.current_model_name = model_path.name
         
         return model, tokenizer
     
     def _load_tokenizer(self, model_path: Path):
-        """加载tokenizer（带降级）"""
+        """加载tokenizer（优先fast，失败降级到slow）"""
         try:
-            return AutoTokenizer.from_pretrained(
+            tokenizer = AutoTokenizer.from_pretrained(
                 str(model_path),
                 trust_remote_code=True,
                 use_fast=True
             )
-        except Exception:
+            logger.info("✓ Fast tokenizer 加载成功")
+            return tokenizer
+        except Exception as e:
+            logger.warning(f"Fast tokenizer 失败，回退到 slow tokenizer: {e}")
             return AutoTokenizer.from_pretrained(
                 str(model_path),
                 trust_remote_code=True,
                 use_fast=False
             )
     
-    def _load_base_model(self, model_path: Path, quantize: bool):
-        """加载基座模型"""
+    def _load_base_model(
+        self, 
+        model_path: Path, 
+        quantize: bool,
+        model_size_gb: float,
+        enable_flash_attention: bool
+    ):
+        """加载基座模型（智能优化）"""
         load_kwargs = {
             "pretrained_model_name_or_path": str(model_path),
             "trust_remote_code": True,
-            "dtype": torch.float16,
+            "torch_dtype": torch.float16,
             "low_cpu_mem_usage": True,
         }
         
-        if quantize and self.device_manager.device == "cuda":
+        # Flash Attention 检测
+        if enable_flash_attention:
+            try:
+                import flash_attn
+                load_kwargs["attn_implementation"] = "flash_attention_2"
+                logger.info("✓ Flash Attention 2 已启用")
+            except ImportError:
+                logger.info("Flash Attention 不可用，使用默认实现")
+        
+        # 量化配置
+        if quantize and self.device_manager.is_cuda:
             load_kwargs["quantization_config"] = (
                 self.device_manager.get_quantization_config()
             )
+            
+            # 小模型优化：<2GB不使用device_map（避免额外开销）
+            if model_size_gb < 2.0:
+                logger.info("小模型检测，直接加载到GPU（避免device_map开销）")
+                load_kwargs["device_map"] = None
+            else:
+                logger.info("大模型检测，使用device_map=auto")
+                load_kwargs["device_map"] = "auto"
+                load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
+        elif self.device_manager.is_cuda:
             load_kwargs["device_map"] = "auto"
             load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
         
+        # 显存监控：加载前
+        memory_before = self.device_manager.get_memory_info()
+        if "allocated_gb" in memory_before:
+            logger.info(f"加载前显存: {memory_before['allocated_gb']:.2f}GB 已分配")
+        
+        # 加载模型
         model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
         model.eval()
+        
+        # 显存监控：加载后
+        memory_after = self.device_manager.get_memory_info()
+        if "allocated_gb" in memory_after:
+            delta = memory_after["allocated_gb"] - memory_before.get("allocated_gb", 0)
+            logger.info(f"加载后显存: {memory_after['allocated_gb']:.2f}GB (+{delta:.2f}GB)")
+            
+            total_gb = memory_after.get("total_gb", 0)
+            if total_gb > 0:
+                utilization = (memory_after["allocated_gb"] / total_gb) * 100
+                logger.info(f"显存利用率: {utilization:.1f}%")
         
         return model
     
     def _apply_lora(self, base_model, lora_path: Path):
         """应用LoRA适配器"""
-        return PeftModel.from_pretrained(
+        logger.info(f"应用LoRA适配器: {lora_path}")
+        model = PeftModel.from_pretrained(
             base_model,
             str(lora_path),
-            dtype=torch.float16
+            torch_dtype=torch.float16
         )
+        # 可选：合并权重（提高推理速度）
+        # model = model.merge_and_unload()
+        return model
+    
+    def _unload_current_model(self):
+        """卸载当前模型（避免显存溢出）"""
+        if self.current_model is not None:
+            logger.info(f"卸载旧模型: {self.current_model_name}")
+            del self.current_model
+            del self.current_tokenizer
+            self.device_manager.cleanup()
+            self.current_model = None
+            self.current_tokenizer = None
+            self.current_model_name = None
 ```
 
 ---
@@ -974,11 +1161,124 @@ class EmbeddingService:
 
 ### Week 4-5: 模型服务重构
 
-#### T2.4 拆分TransformersService（5天）
+#### T2.4 拆分TransformersService（6天）⭐
 
 **当前问题**：`transformers_service.py`（835行）包含7个职责混合
 
-**拆分方案**：6个独立模块 + 1个协调器
+**拆分方案**：7个独立模块 + 1个协调器（基于可行性验证调整）
+
+**改进点**：
+- ✅ 新增ConfigManager统一配置管理
+- ✅ GenerationEngine改名为InferenceEngine，职责更明确
+- ✅ 增加1天时间用于配置管理模块开发
+
+##### 模块0: ConfigManager - 配置管理（100行，新增）
+
+```python
+# Backend/app/core/llm/transformers/config_manager.py
+import torch
+from transformers import BitsAndBytesConfig
+from typing import Dict, Any
+from app.core.device.gpu_manager import DeviceManager
+
+class ConfigManager:
+    """统一配置管理（量化、生成参数）"""
+    
+    def __init__(self, device_manager: DeviceManager):
+        self.device_manager = device_manager
+    
+    def get_quantization_config(self) -> BitsAndBytesConfig:
+        """
+        获取INT4量化配置（仅CUDA支持）
+        
+        Returns:
+            量化配置对象
+        """
+        if not self.device_manager.is_cuda:
+            return None
+        
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4"
+        )
+    
+    def get_generation_config(self, **kwargs) -> Dict[str, Any]:
+        """
+        获取生成配置（合并默认值和用户参数）
+        
+        Args:
+            **kwargs: 用户自定义参数
+            
+        Returns:
+            完整生成配置
+        """
+        # 默认配置
+        default_config = {
+            "max_new_tokens": 512,
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "top_k": 50,
+            "repetition_penalty": 1.1,
+            "do_sample": True
+        }
+        
+        # 合并用户参数（kwargs优先）
+        default_config.update(kwargs)
+        
+        # 特殊处理：temperature=0时关闭采样
+        if default_config["temperature"] == 0:
+            default_config["do_sample"] = False
+        
+        return default_config
+    
+    def get_load_config(
+        self, 
+        quantize: bool, 
+        model_size_gb: float,
+        enable_flash_attention: bool = True
+    ) -> Dict[str, Any]:
+        """
+        获取模型加载配置（根据显存优化）
+        
+        Args:
+            quantize: 是否量化
+            model_size_gb: 模型大小（INT4量化后）
+            enable_flash_attention: 是否启用Flash Attention
+            
+        Returns:
+            加载配置字典
+        """
+        config = {
+            "trust_remote_code": True,
+            "torch_dtype": torch.float16,
+            "low_cpu_mem_usage": True,
+        }
+        
+        # Flash Attention（可选）
+        if enable_flash_attention:
+            try:
+                import flash_attn
+                config["attn_implementation"] = "flash_attention_2"
+            except ImportError:
+                pass
+        
+        # 量化配置
+        if quantize and self.device_manager.is_cuda:
+            config["quantization_config"] = self.get_quantization_config()
+            
+            # 小模型优化：<2GB不使用device_map（避免额外开销）
+            if model_size_gb < 2.0:
+                config["device_map"] = None
+            else:
+                config["device_map"] = "auto"
+                config["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
+        elif self.device_manager.is_cuda:
+            config["device_map"] = "auto"
+        
+        return config
+```
 
 ##### 模块1: PromptBuilder - 提示词构建（150行）
 
@@ -1178,22 +1478,137 @@ class LoRAAdapter:
         }
 ```
 
-##### 模块4: TransformersLLM - 协调器（280行）
+##### 模块4: InferenceEngine - 推理引擎（150行，重命名）
+
+```python
+# Backend/app/core/llm/transformers/inference_engine.py
+import torch
+import asyncio
+from typing import Dict, Any, AsyncGenerator
+from transformers import TextIteratorStreamer
+from threading import Thread
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+class InferenceEngine:
+    """纯推理逻辑（同步/异步/流式）"""
+    
+    def __init__(self, device_manager):
+        self.device_manager = device_manager
+    
+    async def generate_sync(
+        self,
+        model,
+        tokenizer,
+        inputs: Dict,
+        gen_config: Dict[str, Any],
+        timeout: int = 60
+    ) -> torch.Tensor:
+        """
+        同步生成（非流式）
+        
+        Args:
+            model: 模型实例
+            tokenizer: 分词器
+            inputs: 输入张量字典
+            gen_config: 生成配置
+            timeout: 超时时间（秒）
+            
+        Returns:
+            生成的token IDs
+        """
+        # 添加pad_token_id
+        gen_config["pad_token_id"] = tokenizer.eos_token_id
+        
+        # 显存监控
+        memory_before = self.device_manager.get_memory_info()
+        if "allocated_gb" in memory_before:
+            logger.info(f"推理前显存: {memory_before['allocated_gb']:.2f}GB")
+        
+        # 异步执行生成
+        loop = asyncio.get_event_loop()
+        try:
+            with torch.no_grad():
+                output_ids = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: model.generate(**inputs, **gen_config)
+                    ),
+                    timeout=timeout
+                )
+        except asyncio.TimeoutError:
+            logger.error(f"生成超时({timeout}秒)")
+            raise RuntimeError("生成超时")
+        
+        # 显存清理
+        self.device_manager.cleanup()
+        
+        return output_ids
+    
+    async def generate_stream(
+        self,
+        model,
+        tokenizer,
+        inputs: Dict,
+        gen_config: Dict[str, Any]
+    ) -> AsyncGenerator[str, None]:
+        """
+        流式生成
+        
+        Args:
+            model: 模型实例
+            tokenizer: 分词器
+            inputs: 输入张量字典
+            gen_config: 生成配置
+            
+        Yields:
+            生成的文本片段
+        """
+        # 添加pad_token_id
+        gen_config["pad_token_id"] = tokenizer.eos_token_id
+        
+        # 创建流式输出器
+        streamer = TextIteratorStreamer(
+            tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True
+        )
+        gen_config["streamer"] = streamer
+        
+        # 后台线程生成
+        thread = Thread(
+            target=lambda: model.generate(**inputs, **gen_config)
+        )
+        thread.start()
+        
+        # 逐块输出
+        for text_chunk in streamer:
+            if text_chunk:
+                yield text_chunk
+        
+        thread.join()
+        
+        # 显存清理
+        self.device_manager.cleanup()
+```
+
+##### 模块5: TransformersLLM - 协调器（280行）
 
 ```python
 # Backend/app/core/llm/transformers/transformers_llm.py
 from pathlib import Path
 from typing import List, Optional, AsyncGenerator
 import torch
-from transformers import TextIteratorStreamer
-from threading import Thread
 
 from app.core.llm.base_llm import BaseLLM, Message, LLMConfig
 from app.core.device.gpu_manager import DeviceManager
 from app.core.model.model_loader import ModelLoader
+from app.core.llm.transformers.config_manager import ConfigManager
 from app.core.llm.transformers.prompt_builder import PromptBuilder
 from app.core.llm.transformers.response_processor import ResponseProcessor
 from app.core.llm.transformers.lora_adapter import LoRAAdapter
+from app.core.llm.transformers.inference_engine import InferenceEngine
 
 class TransformersLLM(BaseLLM):
     """Transformers本地模型实现（整合所有模块）"""
@@ -1213,8 +1628,10 @@ class TransformersLLM(BaseLLM):
         # 依赖组件
         self.device_manager = DeviceManager()
         self.model_loader = ModelLoader(self.device_manager)
+        self.config_manager = ConfigManager(self.device_manager)
         self.prompt_builder = PromptBuilder()
         self.response_processor = ResponseProcessor()
+        self.inference_engine = InferenceEngine(self.device_manager)
         
         # 模型资源
         self.model = None
@@ -1249,7 +1666,7 @@ class TransformersLLM(BaseLLM):
         system_prompt: Optional[str] = None,
         **kwargs
     ):
-        """生成回复"""
+        """生成回复（协调所有模块）"""
         # 1. 构建提示词
         message_dicts = [{"role": m.role, "content": m.content} for m in messages]
         prompt = self.prompt_builder.build(message_dicts, system_prompt)
@@ -1262,62 +1679,34 @@ class TransformersLLM(BaseLLM):
             max_length=2048
         ).to(self.device_manager.device)
         
-        # 3. 合并生成参数
-        gen_config = self._merge_config(**kwargs)
-        gen_kwargs = {
-            "max_new_tokens": gen_config["max_new_tokens"],
-            "temperature": gen_config["temperature"],
-            "top_p": gen_config["top_p"],
-            "top_k": gen_config["top_k"],
-            "repetition_penalty": gen_config["repetition_penalty"],
-            "do_sample": True,
-            "pad_token_id": self.tokenizer.eos_token_id
-        }
+        # 3. 获取生成配置（使用ConfigManager）
+        gen_config = self.config_manager.get_generation_config(**kwargs)
         
-        # 4. 生成
+        # 4. 获取当前模型（可能是LoRA模型）
+        model = self.lora_adapter.get_model()
+        
+        # 5. 推理生成（使用InferenceEngine）
         if stream:
-            return self._stream_generate(inputs, gen_kwargs)
+            # 流式生成
+            async for chunk in self.inference_engine.generate_stream(
+                model, self.tokenizer, inputs, gen_config
+            ):
+                yield chunk
         else:
-            return await self._sync_generate(inputs, gen_kwargs)
-    
-    async def _sync_generate(self, inputs, gen_kwargs) -> str:
-        """非流式生成"""
-        model = self.lora_adapter.get_model()
-        
-        with torch.no_grad():
-            outputs = model.generate(**inputs, **gen_kwargs)
-        
-        # 解码
-        full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
-        
-        # 后处理
-        return self.response_processor.process(full_text)
-    
-    async def _stream_generate(self, inputs, gen_kwargs) -> AsyncGenerator[str, None]:
-        """流式生成"""
-        model = self.lora_adapter.get_model()
-        
-        # 创建流式输出器
-        streamer = TextIteratorStreamer(
-            self.tokenizer,
-            skip_prompt=True,
-            skip_special_tokens=True
-        )
-        gen_kwargs["streamer"] = streamer
-        
-        # 在后台线程生成
-        thread = Thread(
-            target=model.generate,
-            kwargs={**inputs, **gen_kwargs}
-        )
-        thread.start()
-        
-        # 逐块输出
-        for text_chunk in streamer:
-            if text_chunk:
-                yield text_chunk
-        
-        thread.join()
+            # 非流式生成
+            output_ids = await self.inference_engine.generate_sync(
+                model, self.tokenizer, inputs, gen_config
+            )
+            
+            # 解码
+            input_length = inputs['input_ids'].shape[1]
+            full_text = self.tokenizer.decode(
+                output_ids[0][input_length:],
+                skip_special_tokens=False
+            )
+            
+            # 后处理
+            return self.response_processor.process(full_text)
     
     async def get_model_info(self):
         """获取模型信息"""
@@ -1727,26 +2116,46 @@ class LLMService:
 
 ---
 
-### 阶段2总结
+### 阶段2总结（基于可行性验证调整）
 
 **完成标准**：
 - ✅ BaseLLM接口单元测试通过
-- ✅ TransformersLLM集成测试通过（对比旧版本输出一致性）
-- ✅ OllamaLLM连接测试通过
-- ✅ embedding_service统一测试通过
-- ✅ model_mgmt模块重构完成（3文件951行 → 2文件530行）
-- ✅ training模块重构完成（500行 → 350行）
-- ✅ 所有模型相关服务更新完成
+- ✅ OllamaLLM和TransformersLLM实现完成
+- ✅ ConfigManager配置管理模块完成（新增）
+- ✅ InferenceEngine推理引擎测试通过（重命名）
+- ✅ 兼容层设计完成，旧API仍可用
+- ✅ 所有模块集成测试通过
+- ✅ 性能基准测试无下降（<0.1%开销）
 
 **预期效果**：
-- ⬇️ transformers_service: 835行 → 280行 (-66%)
-- ⬇️ embedding相关: 538行 → 250行 (-54%)
+- ⬇️ transformers_service: 835行 → 7个模块（~830行，但职责清晰）
+  - ConfigManager: 100行
+  - PromptBuilder: 150行
+  - ResponseProcessor: 80行
+  - LoRAAdapter: 120行
+  - InferenceEngine: 150行
+  - TransformersLLM: 280行（协调器）
+- ⬇️ ollama集成: 486行 → 300行 (-38%)
+- ⬇️ embedding服务: 538行 → 250行 (-54%)
 - ⬇️ model_mgmt: 951行 → 530行 (-44%)
-- ⬇️ training: 500行 → 350行 (-30%)
-- ⬆️ 可扩展性: 新增模型类型只需实现BaseLLM接口
-- ⬆️ 可维护性: 统一的扫描器和训练管理
+- ⬆️ 插件化架构: 可随时添加新的LLM后端（OpenAI/Claude等）
+- ⬆️ 接口统一性: 所有LLM共享BaseLLM接口
+- ⬆️ 可测试性: 每个模块可独立测试
+- ⬆️ 可维护性: 职责单一，修改影响范围小
 
-**下一步**：进入阶段3 - 业务逻辑层重构
+**时间调整**：15天 → 17天
+- Week 3: T2.1-T2.3（5天）无变化
+- Week 4-5: T2.4-T2.6（10天 → 12天）
+  - T2.4 拆分Transformers: 5天 → 6天（+ConfigManager）
+  - T2.5 TransformersLLM: 3天 → 4天（+兼容层）
+  - T2.6 测试与集成: 2天 → 2天
+
+**风险控制**：
+- ✅ 保留兼容层（transformers_service.py内部调用TransformersLLM）
+- ✅ 渐进式迁移（API端点逐步切换到新接口）
+- ✅ 回滚策略（旧代码保留到Week 11再删除）
+
+**下一步**：进入阶段3 - 业务层重构
 
 ---
 
@@ -2322,47 +2731,61 @@ class GraphRetriever(BaseRetriever):
 
 ### Week 8: 知识库服务重构
 
-#### T3.10 拆分knowledge_base_service（3天）
+#### T3.10 拆分knowledge_base_service（4天）⭐
 
 **当前问题**：
-`knowledge_base_service.py`（528行）包含4个职责：
+`knowledge_base_service.py`（558行）包含4个职责混合：
 1. CRUD操作（创建/删除知识库）
-2. 文档管理（上传/分块）
+2. 文档管理（上传/分块/向量化）
 3. 检索逻辑（向量搜索）
 4. 知识图谱操作
 
-**重构方案**：职责分离
+**重构方案**：职责分离为4个独立服务（基于可行性验证调整）
+
+##### 服务1: KnowledgeBaseService - 纯CRUD（保留，200行）
 
 ```python
-# Backend/app/services/knowledge/knowledge_base_service.py（重构后，220行）
+# Backend/app/services/knowledge/knowledge_base_service.py（重构后）
+from app.core.retrieval.retriever_manager import RetrieverManager
+
 class KnowledgeBaseService:
-    """知识库服务（仅负责CRUD + 检索策略选择）"""
+    """知识库服务（仅负责CRUD + 统计）"""
     
     def __init__(self):
         self.db = DatabaseService()
-        self.retrievers = self._init_retrievers()
+        self.retriever_manager = RetrieverManager()  # 使用策略管理器
     
-    def _init_retrievers(self) -> dict:
-        """初始化所有检索器"""
-        config = RetrievalConfig(top_k=5, score_threshold=0.6)
-        
-        embedding_service = EmbeddingService()
-        vector_retriever = VectorRetriever(config, embedding_service)
-        bm25_retriever = BM25Retriever(config)
-        
-        return {
-            "vector": vector_retriever,
-            "bm25": bm25_retriever,
-            "hybrid": HybridRetriever(config, vector_retriever, bm25_retriever),
-            "graph": GraphRetriever(config, GraphService())
-        }
-    
-    async def create_knowledge_base(self, name: str, description: str) -> int:
+    async def create_knowledge_base(
+        self,
+        name: str,
+        description: str,
+        embedding_model: str = "bge-small-zh-v1.5"
+    ) -> int:
         """创建知识库"""
-        kb_id = self.db.insert_knowledge_base(name, description)
+        kb_id = await self.db.insert_knowledge_base(
+            name=name,
+            description=description,
+            embedding_model=embedding_model
+        )
+        
+        # 初始化向量存储
+        from app.services.vector_store_service import VectorStoreService
         vector_store = VectorStoreService()
-        vector_store.create_collection(f"kb_{kb_id}")
+        await vector_store.create_collection(f"kb_{kb_id}")
+        
         return kb_id
+    
+    async def delete_knowledge_base(self, kb_id: int) -> bool:
+        """删除知识库（级联删除文档和向量）"""
+        # 1. 删除向量集合
+        from app.services.vector_store_service import VectorStoreService
+        vector_store = VectorStoreService()
+        await vector_store.delete_collection(f"kb_{kb_id}")
+        
+        # 2. 删除数据库记录
+        await self.db.delete_knowledge_base(kb_id)
+        
+        return True
     
     async def search(
         self,
@@ -2371,13 +2794,13 @@ class KnowledgeBaseService:
         strategy: str = "hybrid",
         top_k: int = 5
     ) -> List[dict]:
-        """统一检索入口"""
-        retriever = self.retrievers.get(strategy)
-        if not retriever:
-            raise ValueError(f"不支持的检索策略: {strategy}")
-        
-        retriever.config.top_k = top_k
-        documents = await retriever.retrieve(query, kb_id)
+        """统一检索入口（委托给RetrieverManager）"""
+        documents = await self.retriever_manager.retrieve(
+            query=query,
+            kb_id=kb_id,
+            strategy=strategy,
+            top_k=top_k
+        )
         
         return [
             {
@@ -2390,95 +2813,686 @@ class KnowledgeBaseService:
         ]
 ```
 
----
-
-#### T3.11 创建document_service（1天）
+##### 服务2: DocumentService - 文档管理（新增，120行）
 
 ```python
-# Backend/app/services/knowledge/document_service.py（新增，200行）
+# Backend/app/services/knowledge/document_service.py
 class DocumentService:
-    """文档管理服务（上传/分块/向量化）"""
+    """文档管理服务（纯文档CRUD，不包含分块和向量化）"""
     
     def __init__(self):
         self.db = DatabaseService()
-        self.vector_store = VectorStoreService()
-        self.embedding = EmbeddingService()
-        self.text_splitter = RecursiveTextSplitter(chunk_size=500, chunk_overlap=50)
     
     async def upload_document(
         self,
         kb_id: int,
-        file_path: Path,
+        filename: str,
+        filepath: str,
+        file_size: int,
         metadata: dict = None
     ) -> int:
-        """上传文档到知识库"""
-        # 1. 保存文档记录
-        doc_id = self.db.insert_document(
+        """创建文档记录"""
+        doc_id = await self.db.insert_document(
             kb_id=kb_id,
-            filename=file_path.name,
-            filepath=str(file_path),
+            filename=filename,
+            filepath=filepath,
+            file_size=file_size,
             metadata=metadata or {}
         )
-        
-        # 2. 读取文本
-        text = self._read_file(file_path)
-        
-        # 3. 文本分块
-        chunks = self.text_splitter.split(text)
-        
-        # 4. 向量化并存储
-        await self._store_chunks(kb_id, doc_id, chunks, metadata)
-        
         return doc_id
+    
+    async def get_document(self, doc_id: int) -> dict:
+        """获取文档信息"""
+        return await self.db.get_document(doc_id)
+    
+    async def delete_document(self, doc_id: int) -> bool:
+        """删除文档"""
+        # 1. 获取文档所属的知识库
+        doc = await self.get_document(doc_id)
+        kb_id = doc['kb_id']
+        
+        # 2. 删除向量（由VectorizationService处理）
+        from app.services.knowledge.vectorization_service import VectorizationService
+        vector_service = VectorizationService()
+        await vector_service.delete_document_vectors(kb_id, doc_id)
+        
+        # 3. 删除数据库记录
+        await self.db.delete_document(doc_id)
+        
+        return True
 ```
+
+##### 服务3: ChunkingService - 文本分块（新增，150行）
+
+```python
+# Backend/app/services/knowledge/chunking_service.py
+from app.core.utils.text_splitter import RecursiveTextSplitter
+
+class ChunkingService:
+    """文本分块服务（专注分块逻辑）"""
+    
+    def __init__(self):
+        self.splitters = {
+            "recursive": RecursiveTextSplitter(chunk_size=500, chunk_overlap=50),
+            "semantic": None  # TODO: 添加语义分割
+        }
+    
+    async def chunk_text(
+        self,
+        text: str,
+        strategy: str = "recursive",
+        chunk_size: int = 500,
+        chunk_overlap: int = 50
+    ) -> List[str]:
+        """将文本分块"""
+        splitter = self.splitters.get(strategy)
+        if not splitter:
+            raise ValueError(f"不支持的分块策略: {strategy}")
+        
+        # 动态调整参数
+        if strategy == "recursive":
+            splitter.chunk_size = chunk_size
+            splitter.chunk_overlap = chunk_overlap
+        
+        chunks = splitter.split(text)
+        return chunks
+    
+    async def chunk_document(
+        self,
+        doc_id: int,
+        filepath: str,
+        strategy: str = "recursive"
+    ) -> List[dict]:
+        """分块文档并保存"""
+        # 1. 读取文件
+        text = self._read_file(filepath)
+        
+        # 2. 分块
+        chunks = await self.chunk_text(text, strategy)
+        
+        # 3. 保存分块记录
+        from app.services.database_service import DatabaseService
+        db = DatabaseService()
+        
+        chunk_records = []
+        for i, chunk in enumerate(chunks):
+            chunk_id = await db.insert_chunk(
+                doc_id=doc_id,
+                content=chunk,
+                chunk_index=i,
+                metadata={"strategy": strategy}
+            )
+            chunk_records.append({
+                "chunk_id": chunk_id,
+                "content": chunk,
+                "index": i
+            })
+        
+        return chunk_records
+    
+    def _read_file(self, filepath: str) -> str:
+        """读取文件内容"""
+        from pathlib import Path
+        path = Path(filepath)
+        
+        if path.suffix == '.txt':
+            return path.read_text(encoding='utf-8')
+        elif path.suffix == '.md':
+            return path.read_text(encoding='utf-8')
+        # TODO: 添加PDF、DOCX支持
+        else:
+            raise ValueError(f"不支持的文件类型: {path.suffix}")
+```
+
+##### 服务4: VectorizationService - 向量化管理（新增，180行）
+
+```python
+# Backend/app/services/knowledge/vectorization_service.py
+from typing import List
+from app.services.embedding_service import EmbeddingService
+from app.services.vector_store_service import VectorStoreService
+
+class VectorizationService:
+    """向量化管理服务（批量向量化、增量更新）"""
+    
+    def __init__(self):
+        self.embedding = EmbeddingService()
+        self.vector_store = VectorStoreService()
+    
+    async def vectorize_chunks(
+        self,
+        kb_id: int,
+        chunks: List[dict],
+        embedding_model: str = "bge-small-zh-v1.5"
+    ) -> int:
+        """
+        批量向量化并存储
+        
+        Args:
+            kb_id: 知识库ID
+            chunks: 分块列表 [{"chunk_id": 1, "content": "...", "metadata": {...}}]
+            embedding_model: 嵌入模型
+            
+        Returns:
+            成功向量化的数量
+        """
+        if not chunks:
+            return 0
+        
+        # 1. 批量向量化（使用指定模型）
+        texts = [chunk['content'] for chunk in chunks]
+        embeddings = await self.embedding.embed_batch(
+            texts,
+            model_name=embedding_model
+        )
+        
+        # 2. 准备向量存储数据
+        collection_name = f"kb_{kb_id}"
+        ids = [str(chunk['chunk_id']) for chunk in chunks]
+        metadatas = [chunk.get('metadata', {}) for chunk in chunks]
+        
+        # 3. 批量插入向量库
+        await self.vector_store.add(
+            collection_name=collection_name,
+            ids=ids,
+            embeddings=embeddings,
+            documents=texts,
+            metadatas=metadatas
+        )
+        
+        return len(chunks)
+    
+    async def update_chunk_vector(
+        self,
+        kb_id: int,
+        chunk_id: int,
+        new_content: str,
+        embedding_model: str
+    ) -> bool:
+        """更新单个分块的向量"""
+        # 1. 重新向量化
+        embedding = await self.embedding.embed_single(
+            new_content,
+            model_name=embedding_model
+        )
+        
+        # 2. 更新向量库
+        collection_name = f"kb_{kb_id}"
+        await self.vector_store.update(
+            collection_name=collection_name,
+            ids=[str(chunk_id)],
+            embeddings=[embedding],
+            documents=[new_content]
+        )
+        
+        return True
+    
+    async def delete_document_vectors(
+        self,
+        kb_id: int,
+        doc_id: int
+    ) -> bool:
+        """删除文档的所有向量"""
+        # 1. 查询文档的所有chunk_id
+        from app.services.database_service import DatabaseService
+        db = DatabaseService()
+        chunks = await db.get_document_chunks(doc_id)
+        
+        if not chunks:
+            return True
+        
+        # 2. 批量删除向量
+        collection_name = f"kb_{kb_id}"
+        chunk_ids = [str(chunk['id']) for chunk in chunks]
+        
+        await self.vector_store.delete(
+            collection_name=collection_name,
+            ids=chunk_ids
+        )
+        
+        return True
+```
+
+**重构效果**：
+- 558行 → 4个文件（650行，但职责清晰）
+  - KnowledgeBaseService: 200行（CRUD + 统计）
+  - DocumentService: 120行（文档管理）
+  - ChunkingService: 150行（文本分块）
+  - VectorizationService: 180行（向量化）
+- 职责单一，易于测试和维护
+- 支持独立优化（例如更换分块策略）
 
 ---
 
-#### T3.12 优化file和metadata服务（1天）
+#### T3.11 独立graph_service（3天）⭐
 
 **当前问题**：
-- `file_service.py`（301行）：包含冗余的文件验证逻辑
-- `metadata_service.py`（128行）：相对简单，保持不变
+知识图谱逻辑混在`knowledge_base_service.py`中（~180行）
 
-**重构方案**：简化file_service
+**重构方案**：完全独立为graph模块
 
 ```python
-# Backend/app/services/storage/file_service.py（简化后，280行）
-from pathlib import Path
-from app.core.utils.path_resolver import PathResolver
+# Backend/app/services/graph/graph_service.py（新增，180行）
+from neo4j import GraphDatabase
 
-class FileService:
-    """文件存储服务（简化版）"""
+class GraphService:
+    """知识图谱服务（独立模块）"""
     
     def __init__(self):
-        self.path_resolver = PathResolver()
-        self.allowed_extensions = {'.txt', '.md', '.pdf', '.docx'}
+        self.driver = GraphDatabase.driver(
+            "bolt://localhost:7687",
+            auth=("neo4j", "password")
+        )
     
-    async def upload(self, kb_id: int, file: UploadFile) -> str:
-        """上传文件"""
-        # 1. 验证文件类型（使用工具类）
-        if not self._is_allowed(file.filename):
-            raise ValueError(f"不支持的文件类型: {file.filename}")
+    async def build_graph(
+        self,
+        kb_id: int,
+        chunks: List[dict],
+        force_rebuild: bool = False
+    ) -> dict:
+        """
+        构建知识图谱
         
-        # 2. 生成保存路径（使用PathResolver）
-        save_path = self.path_resolver.get_upload_path(kb_id, file.filename)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
+        Args:
+            kb_id: 知识库ID
+            chunks: 文本分块列表
+            force_rebuild: 是否强制重建
+            
+        Returns:
+            {"nodes": 100, "relationships": 250}
+        """
+        # 1. 检查是否已存在
+        if not force_rebuild:
+            stats = await self.get_stats(kb_id)
+            if stats['nodes'] > 0:
+                return stats
         
-        # 3. 保存文件
-        with open(save_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+        # 2. 提取实体和关系（使用NER + 关系抽取）
+        entities, relations = await self._extract_entities_relations(chunks)
         
-        return str(save_path)
+        # 3. 写入Neo4j
+        with self.driver.session() as session:
+            # 清空旧图谱
+            if force_rebuild:
+                session.run("MATCH (n:Entity {kb_id: $kb_id}) DETACH DELETE n", kb_id=kb_id)
+            
+            # 创建节点
+            for entity in entities:
+                session.run(
+                    """
+                    MERGE (e:Entity {name: $name, kb_id: $kb_id})
+                    SET e.type = $type, e.mentions = $mentions
+                    """,
+                    name=entity['name'],
+                    kb_id=kb_id,
+                    type=entity['type'],
+                    mentions=entity['mentions']
+                )
+            
+            # 创建关系
+            for rel in relations:
+                session.run(
+                    """
+                    MATCH (a:Entity {name: $head, kb_id: $kb_id})
+                    MATCH (b:Entity {name: $tail, kb_id: $kb_id})
+                    MERGE (a)-[r:RELATION {type: $rel_type}]->(b)
+                    """,
+                    head=rel['head'],
+                    tail=rel['tail'],
+                    rel_type=rel['relation'],
+                    kb_id=kb_id
+                )
+        
+        # 4. 返回统计
+        return await self.get_stats(kb_id)
     
-    def _is_allowed(self, filename: str) -> bool:
-        """检查文件类型（简化版）"""
-        return Path(filename).suffix.lower() in self.allowed_extensions
+    async def query_graph(
+        self,
+        kb_id: int,
+        entity: str,
+        max_hops: int = 2
+    ) -> dict:
+        """查询实体的关系图谱"""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH path = (e:Entity {name: $entity, kb_id: $kb_id})-[*1..$max_hops]-(related)
+                RETURN e, related, relationships(path)
+                """,
+                entity=entity,
+                kb_id=kb_id,
+                max_hops=max_hops
+            )
+            
+            # 格式化返回结果
+            nodes = []
+            relationships = []
+            for record in result:
+                # TODO: 格式化节点和关系
+                pass
+            
+            return {"nodes": nodes, "relationships": relationships}
+    
+    async def get_stats(self, kb_id: int) -> dict:
+        """获取图谱统计信息"""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n:Entity {kb_id: $kb_id})
+                OPTIONAL MATCH (n)-[r]-()
+                RETURN count(DISTINCT n) as nodes, count(r) as relationships
+                """,
+                kb_id=kb_id
+            )
+            record = result.single()
+            return {
+                "nodes": record["nodes"],
+                "relationships": record["relationships"]
+            }
 ```
 
-**优化效果**：
-- 301行 → 280行（-7%）
-- 使用PathResolver统一路径管理
+**重构效果**：
+- 知识图谱完全解耦
+- KnowledgeBaseService不再包含图谱代码
+- 支持独立优化图谱算法
+
+---
+
+#### T3.12 创建RetrieverManager（1.5天）⭐
+
+**当前问题**（基于可行性验证调整）：
+1. 检索器分散在各个服务中初始化，缺少统一管理
+2. 命名冲突风险：之前设计的"RetrievalService"与BaseRetriever接口混淆
+3. chat_service.py中检索逻辑调用分散，不便维护
+
+**重构方案**：创建RetrieverManager统一管理所有检索策略
+
+```python
+# Backend/app/core/retrieval/retriever_manager.py（新增，180行）
+from typing import Dict, List
+from app.core.retrieval.base_retriever import BaseRetriever, RetrievalConfig, Document
+from app.core.retrieval.vector_retriever import VectorRetriever
+from app.core.retrieval.bm25_retriever import BM25Retriever
+from app.core.retrieval.hybrid_retriever import HybridRetriever
+from app.core.retrieval.graph_retriever import GraphRetriever
+
+class RetrieverManager:
+    """
+    检索策略管理器（统一入口）
+    
+    职责：
+    1. 管理所有检索器实例（单例模式）
+    2. 提供统一的检索接口
+    3. 动态配置检索参数
+    
+    解决问题：
+    - 避免命名冲突（RetrievalService → RetrieverManager）
+    - 集中管理检索器（避免分散初始化）
+    - 简化KnowledgeBaseService和ChatService的调用
+    """
+    
+    _instance = None
+    
+    def __new__(cls):
+        """单例模式（避免重复初始化检索器）"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        
+        self.retrievers: Dict[str, BaseRetriever] = {}
+        self.default_config = RetrievalConfig(
+            top_k=5,
+            score_threshold=0.6,
+            enable_rerank=False
+        )
+        self._init_retrievers()
+        self._initialized = True
+    
+    def _init_retrievers(self):
+        """初始化所有检索器"""
+        from app.services.embedding_service import EmbeddingService
+        from app.services.graph.graph_service import GraphService
+        
+        embedding_service = EmbeddingService()
+        graph_service = GraphService()
+        
+        # 向量检索器
+        vector_retriever = VectorRetriever(
+            self.default_config,
+            embedding_service
+        )
+        
+        # BM25检索器
+        bm25_retriever = BM25Retriever(self.default_config)
+        
+        # 混合检索器
+        hybrid_retriever = HybridRetriever(
+            self.default_config,
+            vector_retriever,
+            bm25_retriever,
+            vector_weight=0.7
+        )
+        
+        # 知识图谱检索器
+        graph_retriever = GraphRetriever(
+            self.default_config,
+            graph_service
+        )
+        
+        self.retrievers = {
+            "vector": vector_retriever,
+            "bm25": bm25_retriever,
+            "hybrid": hybrid_retriever,
+            "graph": graph_retriever
+        }
+    
+    async def retrieve(
+        self,
+        query: str,
+        kb_id: int,
+        strategy: str = "hybrid",
+        top_k: int = None,
+        **kwargs
+    ) -> List[Document]:
+        """
+        统一检索入口（解决chat_service中检索逻辑分散问题）
+        
+        Args:
+            query: 查询文本
+            kb_id: 知识库ID
+            strategy: 检索策略 (vector/bm25/hybrid/graph)
+            top_k: 返回结果数量（覆盖默认配置）
+            **kwargs: 额外参数（如score_threshold）
+            
+        Returns:
+            文档列表（按相关性排序）
+        """
+        retriever = self.retrievers.get(strategy)
+        if not retriever:
+            raise ValueError(
+                f"不支持的检索策略: {strategy}. "
+                f"可用策略: {list(self.retrievers.keys())}"
+            )
+        
+        # 临时覆盖配置
+        if top_k is not None:
+            original_top_k = retriever.config.top_k
+            retriever.config.top_k = top_k
+            
+            documents = await retriever.retrieve(query, kb_id, **kwargs)
+            
+            # 恢复原配置
+            retriever.config.top_k = original_top_k
+        else:
+            documents = await retriever.retrieve(query, kb_id, **kwargs)
+        
+        return documents
+    
+    def get_available_strategies(self) -> List[str]:
+        """获取支持的检索策略"""
+        return list(self.retrievers.keys())
+    
+    def get_retriever_info(self, strategy: str) -> dict:
+        """获取检索器信息"""
+        retriever = self.retrievers.get(strategy)
+        if not retriever:
+            return {}
+        return retriever.get_retriever_info()
+```
+
+**使用示例**（解决knowledge_base_service和chat_service的调用问题）：
+
+```python
+# 在KnowledgeBaseService中使用（代码已在T3.10中展示）
+from app.core.retrieval.retriever_manager import RetrieverManager
+
+class KnowledgeBaseService:
+    def __init__(self):
+        self.db = DatabaseService()
+        self.retriever_manager = RetrieverManager()  # 使用统一管理器
+    
+    async def search(
+        self,
+        query: str,
+        kb_id: int,
+        strategy: str = "hybrid",
+        top_k: int = 5
+    ) -> List[dict]:
+        """统一检索入口"""
+        documents = await self.retriever_manager.retrieve(
+            query=query,
+            kb_id=kb_id,
+            strategy=strategy,
+            top_k=top_k
+        )
+        
+        return [
+            {
+                "content": doc.content,
+                "metadata": doc.metadata,
+                "score": doc.score,
+                "doc_id": doc.doc_id
+            }
+            for doc in documents
+        ]
+
+# 在ChatService中使用（简化检索逻辑）
+class ChatService:
+    def __init__(self):
+        self.retriever_manager = RetrieverManager()
+    
+    async def generate_with_context(
+        self,
+        query: str,
+        kb_id: int,
+        history: List[dict] = None
+    ) -> str:
+        """RAG生成（检索+生成）"""
+        # 1. 检索相关文档（使用统一管理器）
+        documents = await self.retriever_manager.retrieve(
+            query=query,
+            kb_id=kb_id,
+            strategy="hybrid"  # 默认使用混合检索
+        )
+        
+        # 2. 构建上下文
+        context = "\n\n".join([doc.content for doc in documents[:3]])
+        
+        # 3. 生成回复
+        prompt = self._build_prompt(query, context, history)
+        response = await self.llm_service.generate(prompt)
+        
+        return response
+```
+
+**重构效果**：
+- ✅ 解决命名冲突：使用RetrieverManager代替RetrievalService
+- ✅ 集中管理所有检索策略（单例模式节省内存）
+- ✅ 简化KnowledgeBaseService和ChatService的检索逻辑
+- ✅ 统一的检索入口，易于测试和维护
+- ✅ 支持动态配置检索参数
+
+---
+
+### Week 8总结
+
+**完成内容**：
+- ✅ KnowledgeBaseService职责拆分（558行 → 200行CRUD）
+- ✅ DocumentService创建（120行，纯文档管理）
+- ✅ ChunkingService创建（150行，文本分块）
+- ✅ VectorizationService创建（180行，向量化管理）
+- ✅ GraphService独立（180行，知识图谱）
+- ✅ RetrieverManager创建（180行，检索统一管理）
+
+**代码量变化**：
+- 重构前: knowledge_base_service.py (558行，职责混杂)
+- 重构后: 6个独立文件（1010行，职责清晰）
+  - KnowledgeBaseService: 200行（CRUD）
+  - DocumentService: 120行（文档管理）
+  - ChunkingService: 150行（分块）
+  - VectorizationService: 180行（向量化）
+  - GraphService: 180行（图谱）
+  - RetrieverManager: 180行（检索管理）
+
+**时间估算**：8.5天（实际建议10天，含测试）
+
+---
+
+### 阶段3总结（Week 6-8）
+
+**重构目标**：
+- ✅ 统一检索策略（4种检索器 + RetrieverManager）
+- ✅ 知识库服务重构（1个巨大服务 → 6个独立服务）
+- ✅ 知识图谱独立（GraphService）
+
+**架构变化**：
+
+```
+重构前（558行knowledge_base_service）：
+knowledge_base_service.py
+├── CRUD操作
+├── 文档管理
+├── 文本分块
+├── 向量化
+├── 检索逻辑
+└── 知识图谱
+
+重构后（模块化设计）：
+core/retrieval/
+├── base_retriever.py (100行) - 检索接口
+├── vector_retriever.py (150行) - 向量检索
+├── bm25_retriever.py (180行) - 全文检索
+├── hybrid_retriever.py (200行) - 混合检索
+├── graph_retriever.py (150行) - 图谱检索
+└── retriever_manager.py (180行) - 统一管理
+
+services/knowledge/
+├── knowledge_base_service.py (200行) - CRUD
+├── document_service.py (120行) - 文档管理
+├── chunking_service.py (150行) - 文本分块
+└── vectorization_service.py (180行) - 向量化
+
+services/graph/
+└── graph_service.py (180行) - 知识图谱
+```
+
+**时间估算**：
+- Week 6: 检索策略统一（5天）
+- Week 7: 混合检索与图谱（5天）
+- Week 8: 知识库服务拆分（8.5天，建议10天）
+- **总计**: 18.5天 → **建议20天**（含集成测试）
+
+**完成标准**：
+1. ✅ 所有检索策略通过单元测试
+2. ✅ KnowledgeBaseService重构完成
+3. ✅ GraphService独立运行
+4. ✅ RetrieverManager统一管理检索逻辑
+5. ✅ 代码覆盖率 > 70%
 
 ---
 
@@ -2490,39 +3504,52 @@ class FileService:
 🎯 提取RAG Pipeline独立模块  
 🎯 优化Agent服务
 
+---
+
 ### Week 9: RAG Pipeline重构
 
-#### T4.1 提取RAG Pipeline（3天）
+#### T4.1a 创建RAG Pipeline基础版（2天）⭐
 
-**当前问题**：`chat_service.py`混合了对话管理、RAG逻辑、流式输出
+**当前问题分析**：
+- `chat_service.py`（624行）职责混杂：对话管理、RAG逻辑、流式输出、混合检索
+- 需要拆分但保留现有特性（历史消息增强、混合检索支持）
 
-**新架构**：
+**基础Pipeline架构**：
 
 ```python
-# Backend/app/core/rag/rag_pipeline.py
+# Backend/app/core/rag/rag_pipeline.py（新增，200行）
 from typing import List, Dict, Optional, AsyncGenerator
 from app.core.llm.base_llm import BaseLLM, Message
-from app.core.retrieval.base_retriever import BaseRetriever
+from app.core.retrieval.retriever_manager import RetrieverManager  # 使用阶段3的RetrieverManager
 
 class RAGPipeline:
-    """RAG处理流水线"""
+    """
+    RAG处理流水线（基础版）
+    
+    职责：
+    1. 协调检索和生成流程
+    2. 构建上下文和提示词
+    3. 支持流式和非流式输出
+    """
     
     def __init__(
         self,
         llm: BaseLLM,
-        retriever: BaseRetriever,
+        retriever_manager: RetrieverManager,
         prompt_template: str = None
     ):
         self.llm = llm
-        self.retriever = retriever
+        self.retriever_manager = retriever_manager
         self.prompt_template = prompt_template or self._default_template()
     
     async def generate(
         self,
         query: str,
         kb_id: int,
+        strategy: str = "hybrid",
         chat_history: List[Message] = None,
         stream: bool = False,
+        top_k: int = 5,
         **kwargs
     ):
         """
@@ -2531,32 +3558,38 @@ class RAGPipeline:
         Args:
             query: 用户查询
             kb_id: 知识库ID
+            strategy: 检索策略（vector/bm25/hybrid/graph）
             chat_history: 对话历史
             stream: 是否流式输出
+            top_k: 检索文档数量
             **kwargs: 额外参数
             
         Returns:
             生成结果（字符串或流）
         """
-        # 1. 检索相关文档
-        documents = await self.retriever.retrieve(query, kb_id)
+        # 1. 检索相关文档（使用RetrieverManager统一接口）
+        documents = await self.retriever_manager.retrieve(
+            query=query,
+            kb_id=kb_id,
+            strategy=strategy,
+            top_k=top_k
+        )
         
         # 2. 构建上下文
         context = self._build_context(documents)
         
-        # 3. 构建提示词
+        # 3. 构建消息列表（注意：这里先用基础版，下个任务添加历史增强）
         messages = self._build_messages(query, context, chat_history)
         
         # 4. 生成回复
-        response = await self.llm.generate(messages, stream=stream, **kwargs)
-        
-        # 5. 返回（附带引用）
         if stream:
-            return self._stream_with_citations(response, documents)
+            return self._generate_stream(messages, documents, **kwargs)
         else:
+            response = await self.llm.generate(messages, stream=False, **kwargs)
             return {
                 "answer": response,
-                "citations": self._format_citations(documents)
+                "citations": self._format_citations(documents),
+                "retrieval_count": len(documents)
             }
     
     def _build_context(self, documents: List) -> str:
@@ -2566,7 +3599,9 @@ class RAGPipeline:
         
         context_parts = []
         for i, doc in enumerate(documents, 1):
-            context_parts.append(f"[{i}] {doc.content}")
+            # 限制每个文档长度
+            content = doc.content[:500] if len(doc.content) > 500 else doc.content
+            context_parts.append(f"[文档{i}] (相似度: {doc.score:.2%})\n{content}")
         
         return "\n\n".join(context_parts)
     
@@ -2576,7 +3611,11 @@ class RAGPipeline:
         context: str,
         chat_history: List[Message] = None
     ) -> List[Message]:
-        """构建对话消息"""
+        """
+        构建对话消息（基础版，不包含历史增强）
+        
+        注意：历史消息增强逻辑将在T4.1b中添加
+        """
         messages = []
         
         # 添加历史对话
@@ -2584,156 +3623,698 @@ class RAGPipeline:
             messages.extend(chat_history)
         
         # 添加当前查询（带上下文）
-        user_message = self.prompt_template.format(
-            context=context,
-            question=query
-        )
+        if context:
+            user_message = self.prompt_template.format(
+                context=context,
+                question=query
+            )
+        else:
+            user_message = query
+        
         messages.append(Message(role="user", content=user_message))
         
         return messages
     
-    async def _stream_with_citations(
+    async def _generate_stream(
         self,
-        response_stream: AsyncGenerator,
-        documents: List
+        messages: List[Message],
+        documents: List,
+        **kwargs
     ) -> AsyncGenerator:
-        """流式输出（先输出答案，最后附带引用）"""
-        # 1. 流式输出答案
-        async for chunk in response_stream:
-            yield chunk
+        """
+        流式生成（先发送sources，再流式输出答案）
         
-        # 2. 输出引用
-        citations = self._format_citations(documents)
-        yield f"\n\n---\n参考来源:\n{citations}"
+        注意：与chat_service现有实现一致（第435-447行）
+        """
+        # 1. 先发送检索结果
+        yield {
+            "type": "sources",
+            "data": {
+                "sources": [
+                    {
+                        "content": doc.content[:200] + ("..." if len(doc.content) > 200 else ""),
+                        "similarity": doc.score,
+                        "source": doc.metadata.get("source", "unknown"),
+                        "metadata": doc.metadata
+                    }
+                    for doc in documents[:5]
+                ],
+                "retrieval_count": len(documents)
+            }
+        }
+        
+        # 2. 流式输出答案
+        async for chunk in await self.llm.generate(messages, stream=True, **kwargs):
+            yield {
+                "type": "text",
+                "data": chunk
+            }
+        
+        # 3. 发送完成信号
+        yield {
+            "type": "done",
+            "data": {}
+        }
     
-    def _format_citations(self, documents: List) -> str:
+    def _format_citations(self, documents: List) -> List[Dict]:
         """格式化引用"""
         citations = []
-        for i, doc in enumerate(documents, 1):
-            source = doc.metadata.get('source', 'unknown')
-            citations.append(f"[{i}] {source} (相关度: {doc.score:.2f})")
+        for i, doc in enumerate(documents[:3], 1):  # 只返回前3个来源
+            citations.append({
+                "content": doc.content[:200] + ("..." if len(doc.content) > 200 else ""),
+                "similarity": doc.score,
+                "source": doc.metadata.get("source", "unknown"),
+                "file_id": doc.metadata.get("file_id")
+            })
         
-        return "\n".join(citations)
+        return citations
     
     def _default_template(self) -> str:
         """默认提示词模板"""
-        return """请根据以下上下文回答问题。如果上下文中没有相关信息，请说"我不知道"。
+        return """基于以下上下文回答问题。如果上下文中没有相关信息，请说"我不知道"。
 
-上下文:
+上下文：
 {context}
 
-问题: {question}
+问题：{question}
 
-回答:"""
+回答："""
 ```
 
-**重构后的ChatService**：
+**重构后的ChatService（基础版）**：
 
 ```python
-# Backend/app/services/chat_service.py (重构后)
-from typing import List, Dict, Optional
+# Backend/app/services/chat_service.py（重构后，简化为~380行）
+from typing import List, Dict, Optional, AsyncGenerator
 from app.core.rag.rag_pipeline import RAGPipeline
-from app.core.retrieval.retriever_factory import RetrieverFactory
+from app.core.retrieval.retriever_manager import RetrieverManager
 from app.services.llm_service import LLMService
+from app.services.database_service import DatabaseService
 
 class ChatService:
-    """对话服务（仅负责会话管理）"""
+    """对话服务（专注会话管理）"""
     
-    def __init__(self):
-        self.db = DatabaseService()
+    def __init__(self, db_manager):
+        self.db = DatabaseService(db_manager)
         self.llm_service = LLMService()
+        self.retriever_manager = RetrieverManager()  # 单例
     
-    async def chat(
+    async def chat_with_assistant(
         self,
-        session_id: int,
-        message: str,
-        kb_id: Optional[int] = None,
-        strategy: str = "hybrid",
-        stream: bool = False
-    ):
+        kb_ids: Optional[List[int]],
+        query: str,
+        history_messages: Optional[List[Dict[str, str]]] = None,
+        system_prompt: Optional[str] = None,
+        top_k: int = 5,
+        llm_model: Optional[str] = None,
+        llm_provider: str = "local",
+        temperature: float = 0.7,
+        use_hybrid_retrieval: bool = False
+    ) -> Dict:
         """
-        对话接口
+        智能助手对话（统一入口）
         
-        Args:
-            session_id: 会话ID
-            message: 用户消息
-            kb_id: 知识库ID（None表示普通对话）
-            strategy: 检索策略
-            stream: 是否流式输出
+        注意：保留原有参数兼容性
         """
-        # 1. 获取对话历史
-        chat_history = self._get_chat_history(session_id)
+        try:
+            # 1. 如果有知识库，使用RAG模式
+            if kb_ids and len(kb_ids) > 0:
+                return await self._rag_chat(
+                    kb_id=kb_ids[0],  # 基础版先支持单知识库
+                    query=query,
+                    history_messages=history_messages,
+                    system_prompt=system_prompt,
+                    top_k=top_k,
+                    llm_model=llm_model,
+                    llm_provider=llm_provider,
+                    temperature=temperature,
+                    strategy="hybrid" if use_hybrid_retrieval else "vector"
+                )
+            else:
+                # 2. 纯对话模式
+                return await self._normal_chat(
+                    query=query,
+                    history_messages=history_messages,
+                    system_prompt=system_prompt,
+                    llm_model=llm_model,
+                    llm_provider=llm_provider,
+                    temperature=temperature
+                )
         
-        # 2. 保存用户消息
-        self.db.insert_message(session_id, "user", message)
-        
-        # 3. 选择模式
-        if kb_id:
-            # RAG模式
-            response = await self._rag_chat(
-                message, kb_id, chat_history, strategy, stream
-            )
-        else:
-            # 普通对话
-            response = await self._normal_chat(
-                message, chat_history, stream
-            )
-        
-        # 4. 保存助手消息（非流式）
-        if not stream:
-            self.db.insert_message(session_id, "assistant", response["answer"])
-        
-        return response
+        except Exception as e:
+            logger.error(f"对话失败: {str(e)}")
+            raise
     
     async def _rag_chat(
         self,
-        message: str,
         kb_id: int,
-        chat_history: List,
-        strategy: str,
-        stream: bool
-    ):
-        """RAG对话"""
+        query: str,
+        history_messages: Optional[List[Dict[str, str]]],
+        system_prompt: Optional[str],
+        top_k: int,
+        llm_model: Optional[str],
+        llm_provider: str,
+        temperature: float,
+        strategy: str
+    ) -> Dict:
+        """RAG对话（使用Pipeline）"""
         # 1. 获取LLM
-        llm = await self.llm_service.get_llm("transformers", "Qwen2.5-1.5B")
+        llm = await self._get_llm(llm_provider, llm_model, temperature)
         
-        # 2. 创建检索器
-        config = RetrievalConfig(top_k=5)
-        retriever = RetrieverFactory.create(
-            strategy=strategy,
-            config=config,
-            embedding_service=EmbeddingService()
+        # 2. 创建RAG Pipeline
+        pipeline = RAGPipeline(
+            llm=llm,
+            retriever_manager=self.retriever_manager
         )
         
-        # 3. 创建RAG Pipeline
-        pipeline = RAGPipeline(llm, retriever)
+        # 3. 转换历史消息格式
+        chat_history = self._convert_history(history_messages) if history_messages else None
         
         # 4. 生成回复
-        return await pipeline.generate(
-            query=message,
+        result = await pipeline.generate(
+            query=query,
             kb_id=kb_id,
+            strategy=strategy,
             chat_history=chat_history,
-            stream=stream
+            top_k=top_k,
+            stream=False
         )
+        
+        return {
+            "answer": result["answer"],
+            "sources": result["citations"],
+            "retrieval_count": result["retrieval_count"],
+            "embedding_model": await self._get_kb_embedding_model(kb_id)
+        }
     
     async def _normal_chat(
         self,
-        message: str,
-        chat_history: List,
-        stream: bool
-    ):
+        query: str,
+        history_messages: Optional[List[Dict[str, str]]],
+        system_prompt: Optional[str],
+        llm_model: Optional[str],
+        llm_provider: str,
+        temperature: float
+    ) -> Dict:
         """普通对话（无RAG）"""
-        llm = await self.llm_service.get_llm("ollama", "qwen2.5:latest")
+        # 1. 获取LLM
+        llm = await self._get_llm(llm_provider, llm_model, temperature)
         
-        messages = chat_history + [Message(role="user", content=message)]
-        response = await llm.generate(messages, stream=stream)
+        # 2. 构建消息
+        messages = []
+        if system_prompt:
+            messages.append(Message(role="system", content=system_prompt))
+        if history_messages:
+            messages.extend(self._convert_history(history_messages))
+        messages.append(Message(role="user", content=query))
         
-        if stream:
-            return response  # 流式生成器
-        else:
-            return {"answer": response, "citations": []}
+        # 3. 生成回复
+        response = await llm.generate(messages, stream=False)
+        
+        return {
+            "answer": response,
+            "sources": [],
+            "retrieval_count": 0
+        }
     
-    def _get_chat_history(self, session_id: int, limit: int = 10) -> List:
+    async def _get_llm(self, provider: str, model: str, temperature: float):
+        """获取LLM实例（统一封装）"""
+        if provider in ["local", "transformers"]:
+            from app.services.transformers_service import get_transformers_service
+            service = get_transformers_service()
+            # TODO: 包装为BaseLLM接口
+            return service
+        elif provider == "ollama":
+            from app.services.ollama_llm_service import get_ollama_llm_service
+            service = get_ollama_llm_service()
+            # TODO: 包装为BaseLLM接口
+            return service
+        else:
+            raise ValueError(f"不支持的LLM提供方: {provider}")
+    
+    def _convert_history(self, history_messages: List[Dict]) -> List[Message]:
+        """转换历史消息格式"""
+        return [
+            Message(role=msg["role"], content=msg["content"])
+            for msg in history_messages
+        ]
+    
+    async def _get_kb_embedding_model(self, kb_id: int) -> str:
+        """获取知识库使用的embedding模型"""
+        from app.services.knowledge_base_service import KnowledgeBaseService
+        kb_service = KnowledgeBaseService(self.db.db_manager)
+        kb = await kb_service.get_knowledge_base(kb_id)
+        return kb.embedding_model if kb else "unknown"
+    
+    # 流式对话方法保持类似结构...
+```
+
+**重构效果（T4.1a）**：
+- ✅ RAG Pipeline独立模块（200行）
+- ✅ 使用RetrieverManager统一检索接口（解决验证问题1）
+- ✅ 流式输出先发sources再流答案（解决验证问题4）
+- ✅ ChatService简化为380行（-39%）
+
+---
+
+#### T4.1b 添加历史消息增强逻辑（1天）⭐
+
+**当前问题**：
+- chat_service.py的`_build_user_message`方法（50-90行）有复杂的历史约定优先逻辑
+- 基础Pipeline未保留此重要特性
+
+**增强方案**：
+
+```python
+# Backend/app/core/rag/rag_pipeline.py（更新）
+class RAGPipeline:
+    # ... 保留上面的代码 ...
+    
+    def _build_messages_enhanced(
+        self,
+        query: str,
+        context: str,
+        chat_history: List[Message] = None,
+        enable_history_priority: bool = True
+    ) -> List[Message]:
+        """
+        构建对话消息（增强版：支持历史约定优先）
+        
+        Args:
+            query: 用户查询
+            context: 检索上下文
+            chat_history: 对话历史
+            enable_history_priority: 是否启用历史约定优先（默认True）
+            
+        Returns:
+            完整消息列表
+        """
+        messages = []
+        
+        # 1. 增强系统提示（当有历史时）
+        if chat_history and len(chat_history) > 0 and enable_history_priority:
+            enhanced_system = """你是一个智能助手。
+
+【核心规则】你必须记住我们之前的对话内容和约定，并在回答时优先遵循对话历史中的信息。如果我之前告诉你某个特定的规则或事实（即使它与常识不同），你必须按照我说的来回答。"""
+            messages.append(Message(role="system", content=enhanced_system))
+        
+        # 2. 添加历史消息
+        if chat_history:
+            # 只保留最近N轮对话（避免上下文过长）
+            recent_history = chat_history[-8:]  # 最近4轮对话（user+assistant）
+            messages.extend(recent_history)
+            
+            logger.info(f"添加历史消息: {len(recent_history)}条")
+        
+        # 3. 构建当前用户消息（历史约定优先提示）
+        if context:
+            if chat_history and len(chat_history) > 0 and enable_history_priority:
+                # 有历史对话：强制历史约定优先
+                history_summary = self._extract_history_summary(chat_history[-4:])  # 最近2轮
+                
+                user_message = f"""‼️【重要】我们之前的对话约定：
+{history_summary}
+
+---
+
+现在有以下参考资料：
+{context}
+
+---
+
+问题：{query}
+
+‼️【回答规则 - 强制执行】：
+1. 如果我之前明确告诉你某个规则或答案（例如"记住1+1=3"），你必须严格按照我说的回答，即使与常识不同
+2. 对话历史中的约定拥有最高优先级，绝对高于参考资料
+3. 只有当对话历史完全没有相关信息时，才使用参考资料
+4. 直接给出答案，不要解释你的推理过程
+
+回答："""
+            else:
+                # 无历史对话：标准RAG模式
+                user_message = f"""基于以下上下文回答问题。如果上下文中没有相关信息，请说"我不知道"。
+
+上下文：
+{context}
+
+问题：{query}
+
+回答："""
+        else:
+            # 纯对话模式（无检索上下文）
+            user_message = query
+        
+        messages.append(Message(role="user", content=user_message))
+        
+        return messages
+    
+    def _extract_history_summary(self, recent_messages: List[Message]) -> str:
+        """
+        提取历史对话摘要
+        
+        Args:
+            recent_messages: 最近的消息列表
+            
+        Returns:
+            格式化的历史摘要
+        """
+        summary_parts = []
+        for msg in recent_messages:
+            # 限制每条消息长度
+            content = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+            summary_parts.append(f"{msg.role}: {content}")
+        
+        return "\n".join(summary_parts)
+    
+    async def generate(
+        self,
+        query: str,
+        kb_id: int,
+        strategy: str = "hybrid",
+        chat_history: List[Message] = None,
+        stream: bool = False,
+        top_k: int = 5,
+        enable_history_priority: bool = True,  # 新增参数
+        **kwargs
+    ):
+        """
+        RAG生成流程（更新版本）
+        
+        新增参数:
+            enable_history_priority: 是否启用历史约定优先（默认True）
+        """
+        # 1. 检索相关文档
+        documents = await self.retriever_manager.retrieve(
+            query=query,
+            kb_id=kb_id,
+            strategy=strategy,
+            top_k=top_k
+        )
+        
+        # 2. 构建上下文
+        context = self._build_context(documents)
+        
+        # 3. 构建消息列表（使用增强版）
+        messages = self._build_messages_enhanced(
+            query=query,
+            context=context,
+            chat_history=chat_history,
+            enable_history_priority=enable_history_priority
+        )
+        
+        # 4. 生成回复
+        if stream:
+            return self._generate_stream(messages, documents, **kwargs)
+        else:
+            response = await self.llm.generate(messages, stream=False, **kwargs)
+            return {
+                "answer": response,
+                "citations": self._format_citations(documents),
+                "retrieval_count": len(documents)
+            }
+```
+
+**测试用例**：
+
+```python
+# Backend/app/tests/test_rag_pipeline.py
+import pytest
+from app.core.rag.rag_pipeline import RAGPipeline
+from app.core.llm.base_llm import Message
+
+@pytest.mark.asyncio
+async def test_history_priority():
+    """测试历史约定优先逻辑"""
+    pipeline = RAGPipeline(mock_llm, mock_retriever)
+    
+    # 模拟历史对话
+    history = [
+        Message(role="user", content="记住：1+1=3"),
+        Message(role="assistant", content="好的，我记住了：1+1=3")
+    ]
+    
+    # 构建消息
+    messages = pipeline._build_messages_enhanced(
+        query="1+1等于几？",
+        context="数学知识：1+1=2",
+        chat_history=history,
+        enable_history_priority=True
+    )
+    
+    # 验证：user消息应包含历史优先提示
+    user_msg = messages[-1].content
+    assert "对话历史中的约定拥有最高优先级" in user_msg
+    assert "1+1=3" in user_msg  # 历史约定
+    assert "1+1=2" in user_msg  # 检索上下文
+```
+
+**重构效果（T4.1b）**：
+- ✅ 保留历史约定优先逻辑（解决验证问题2）
+- ✅ 支持开关控制（enable_history_priority参数）
+- ✅ 历史消息长度控制（最近8条）
+- ✅ 完全兼容现有chat_service行为
+
+---
+
+#### T4.1c 整合混合检索到RetrieverManager（1天）⭐
+
+**当前问题**：
+- chat_service.py有独立的`_hybrid_search`方法（70行）调用`hybrid_retrieval_service`
+- 需要将向量+图谱融合整合到RetrieverManager
+
+**整合方案**：
+
+```python
+# Backend/app/core/retrieval/retriever_manager.py（更新，添加图谱支持）
+class RetrieverManager:
+    """检索策略管理器（增强版：支持图谱融合）"""
+    
+    def __init__(self):
+        # ... 保留原有代码 ...
+        self.graph_enabled = False  # 默认关闭
+        self._check_graph_availability()
+    
+    def _check_graph_availability(self):
+        """检查知识图谱是否可用"""
+        try:
+            from app.core.config import settings
+            self.graph_enabled = settings.knowledge_graph.enabled
+            logger.info(f"知识图谱状态: {'启用' if self.graph_enabled else '禁用'}")
+        except Exception as e:
+            logger.warning(f"无法检测图谱状态: {e}")
+            self.graph_enabled = False
+    
+    async def retrieve(
+        self,
+        query: str,
+        kb_id: int,
+        strategy: str = "hybrid",
+        top_k: int = None,
+        enable_graph: bool = None,  # 新增：显式控制图谱
+        **kwargs
+    ) -> List[Document]:
+        """
+        统一检索入口（增强版：支持图谱融合）
+        
+        新增参数:
+            enable_graph: 是否启用图谱增强（None表示自动检测）
+        """
+        # 1. 如果策略是hybrid且图谱可用，进行融合检索
+        if strategy == "hybrid" and self._should_use_graph(enable_graph):
+            return await self._hybrid_search_with_graph(query, kb_id, top_k, **kwargs)
+        
+        # 2. 普通检索
+        retriever = self.retrievers.get(strategy)
+        if not retriever:
+            raise ValueError(
+                f"不支持的检索策略: {strategy}. "
+                f"可用策略: {list(self.retrievers.keys())}"
+            )
+        
+        # 临时覆盖配置
+        if top_k is not None:
+            original_top_k = retriever.config.top_k
+            retriever.config.top_k = top_k
+            
+            documents = await retriever.retrieve(query, kb_id, **kwargs)
+            
+            # 恢复原配置
+            retriever.config.top_k = original_top_k
+        else:
+            documents = await retriever.retrieve(query, kb_id, **kwargs)
+        
+        return documents
+    
+    def _should_use_graph(self, enable_graph: Optional[bool]) -> bool:
+        """判断是否应该使用图谱"""
+        if enable_graph is not None:
+            # 显式指定
+            return enable_graph and self.graph_enabled
+        else:
+            # 自动检测
+            return self.graph_enabled
+    
+    async def _hybrid_search_with_graph(
+        self,
+        query: str,
+        kb_id: int,
+        top_k: int = 5,
+        **kwargs
+    ) -> List[Document]:
+        """
+        混合检索（向量+图谱融合）
+        
+        整合自chat_service的_hybrid_search方法
+        """
+        try:
+            from app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
+            
+            hybrid_service = get_hybrid_retrieval_service()
+            
+            # 调用混合检索服务
+            results = await hybrid_service.hybrid_search(
+                kb_id=kb_id,
+                query=query,
+                top_k=top_k,
+                enable_graph=True
+            )
+            
+            # 转换为Document对象
+            documents = []
+            for result in results:
+                documents.append(Document(
+                    content=result['content'],
+                    metadata=result.get('metadata', {}),
+                    score=result.get('final_score', result.get('score', 0)),
+                    doc_id=result.get('chunk_id', 'unknown')
+                ))
+            
+            return documents
+            
+        except Exception as e:
+            logger.error(f"图谱融合检索失败，降级为向量检索: {str(e)}")
+            # 降级为纯向量检索
+            vector_retriever = self.retrievers["vector"]
+            return await vector_retriever.retrieve(query, kb_id, **kwargs)
+```
+
+**ChatService更新**：
+
+```python
+# Backend/app/services/chat_service.py（删除_hybrid_search方法）
+class ChatService:
+    # ... 保留其他代码 ...
+    
+    # ❌ 删除原有的_hybrid_search方法（70行）
+    # async def _hybrid_search(...):
+    #     ...  # 已迁移到RetrieverManager
+    
+    async def _rag_chat(
+        self,
+        kb_id: int,
+        query: str,
+        history_messages: Optional[List[Dict[str, str]]],
+        system_prompt: Optional[str],
+        top_k: int,
+        llm_model: Optional[str],
+        llm_provider: str,
+        temperature: float,
+        strategy: str
+    ) -> Dict:
+        """RAG对话（更新：使用RetrieverManager的图谱支持）"""
+        # 1. 获取LLM
+        llm = await self._get_llm(llm_provider, llm_model, temperature)
+        
+        # 2. 创建RAG Pipeline（RetrieverManager自动处理图谱）
+        pipeline = RAGPipeline(
+            llm=llm,
+            retriever_manager=self.retriever_manager
+        )
+        
+        # 3. 转换历史消息格式
+        chat_history = self._convert_history(history_messages) if history_messages else None
+        
+        # 4. 生成回复（strategy="hybrid"时自动使用图谱）
+        result = await pipeline.generate(
+            query=query,
+            kb_id=kb_id,
+            strategy=strategy,  # "hybrid"会自动启用图谱
+            chat_history=chat_history,
+            top_k=top_k,
+            stream=False
+        )
+        
+        return {
+            "answer": result["answer"],
+            "sources": result["citations"],
+            "retrieval_count": result["retrieval_count"],
+            "embedding_model": await self._get_kb_embedding_model(kb_id)
+        }
+```
+
+**重构效果（T4.1c）**：
+- ✅ 图谱融合逻辑迁移到RetrieverManager（解决验证问题3）
+- ✅ ChatService删除_hybrid_search方法（-70行）
+- ✅ 自动检测图谱可用性，失败时降级
+- ✅ 支持显式控制图谱启用（enable_graph参数）
+
+---
+
+#### T4.1d 集成测试与调试（1天）
+
+**测试清单**：
+
+```bash
+# 1. 单元测试
+pytest app/tests/test_rag_pipeline.py -v
+pytest app/tests/test_retriever_manager.py -v
+
+# 2. 集成测试：RAG完整流程
+pytest app/tests/test_chat_service_integration.py -v
+
+# 3. 性能测试：确保无性能下降
+python benchmark/rag_latency.py --before --after
+
+# 4. 功能验证
+# - 纯对话模式
+# - RAG模式（向量检索）
+# - RAG模式（混合检索）
+# - RAG模式（混合检索+图谱）
+# - 历史约定优先功能
+# - 流式输出功能
+```
+
+**调试重点**：
+1. RetrieverManager单例模式是否正常工作
+2. 历史消息增强逻辑是否保留原有行为
+3. 图谱融合降级机制是否生效
+4. 流式输出sources位置是否正确
+
+---
+
+### Week 9总结
+
+**完成内容**：
+- ✅ T4.1a：RAG Pipeline基础版（200行）
+- ✅ T4.1b：历史消息增强逻辑（保留50行复杂Prompt）
+- ✅ T4.1c：图谱融合整合到RetrieverManager
+- ✅ T4.1d：集成测试与调试
+
+**代码量变化**：
+- RAG Pipeline: 新增200行
+- RetrieverManager: 更新+60行（图谱支持）
+- ChatService: 624行 → 380行（-244行，-39%）
+
+**关键修复**：
+1. ✅ 使用RetrieverManager代替RetrieverFactory
+2. ✅ 保留历史约定优先逻辑（50行Prompt构建）
+3. ✅ 整合混合检索到RetrieverManager
+4. ✅ 流式输出先发sources再流答案
+
+**时间统计**：Week 9用时5天（含测试）
+
+---
         """获取对话历史"""
         messages = self.db.get_session_messages(session_id, limit=limit)
         return [
@@ -2746,30 +4327,140 @@ class ChatService:
 
 ### Week 10: Agent服务优化
 
-#### T4.2 优化Agent工具调用（2天）
+#### T4.2a 创建统一ToolRegistry（1.5天）⭐
 
-**当前问题**：`agent_service.py`工具注册混乱，缺少统一管理
+**当前问题分析**：
+- agent_service.py有自定义Tool类（30行）
+- 工具注册方式分散（`register_tool`方法 + `_register_default_tools`）
+- 缺少参数验证和异步支持
 
-**新架构**：
+**统一ToolDefinition设计**：
 
 ```python
-# Backend/app/core/agent/tool_registry.py
-from typing import Dict, Callable, Any
+# Backend/app/core/agent/tool_definition.py（新增，120行）
+from typing import Dict, Callable, Any, Optional
 from dataclasses import dataclass
+import asyncio
+import json
+import logging
+
+logger = logging.getlogger(__name__)
 
 @dataclass
 class ToolDefinition:
-    """工具定义"""
+    """
+    工具定义（统一版本，替代旧的Tool类）
+    
+    改进：
+    1. 支持参数验证
+    2. 支持异步函数
+    3. OpenAI函数调用格式兼容
+    """
     name: str
     description: str
     parameters: Dict[str, Any]
     function: Callable
+    
+    def validate_input(self, input_params: Dict) -> tuple[bool, Optional[str]]:
+        """
+        验证输入参数
+        
+        Returns:
+            (is_valid, error_message)
+        """
+        required = self.parameters.get("required", [])
+        
+        # 检查必需参数
+        for param in required:
+            if param not in input_params:
+                return False, f"缺少必需参数: {param}"
+        
+        # 检查参数类型（简单验证）
+        properties = self.parameters.get("properties", {})
+        for key, value in input_params.items():
+            if key in properties:
+                expected_type = properties[key].get("type")
+                actual_type = type(value).__name__
+                
+                # 类型映射
+                type_mapping = {
+                    "str": "string",
+                    "int": "integer",
+                    "float": "number",
+                    "bool": "boolean",
+                    "list": "array",
+                    "dict": "object"
+                }
+                
+                if type_mapping.get(actual_type) != expected_type:
+                    return False, f"参数 {key} 类型错误: 期望 {expected_type}, 实际 {actual_type}"
+        
+        return True, None
+    
+    async def run(self, **kwargs) -> str:
+        """
+        执行工具（支持异步）
+        
+        Args:
+            **kwargs: 工具参数
+            
+        Returns:
+            工具执行结果（字符串）
+        """
+        try:
+            # 1. 验证输入
+            is_valid, error_msg = self.validate_input(kwargs)
+            if not is_valid:
+                return f"[参数错误] {error_msg}"
+            
+            # 2. 执行函数
+            if asyncio.iscoroutinefunction(self.function):
+                result = await self.function(**kwargs)
+            else:
+                result = self.function(**kwargs)
+            
+            # 3. 格式化返回
+            return str(result)
+        
+        except Exception as e:
+            logger.error(f"工具 {self.name} 执行失败: {str(e)}")
+            return f"[执行错误] {str(e)}"
+    
+    def to_openai_format(self) -> Dict:
+        """转换为OpenAI函数调用格式"""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters
+        }
+
 
 class ToolRegistry:
-    """工具注册表（集中管理Agent工具）"""
+    """
+    工具注册表（集中管理Agent工具）
+    
+    特点：
+    1. 装饰器注册模式
+    2. 单例模式（全局共享）
+    3. 支持动态添加/删除工具
+    """
+    
+    _instance = None
+    
+    def __new__(cls):
+        """单例模式"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
     
     def __init__(self):
+        if self._initialized:
+            return
+        
         self.tools: Dict[str, ToolDefinition] = {}
+        self._initialized = True
+        logger.info("ToolRegistry initialized")
     
     def register(
         self,
@@ -2777,7 +4468,18 @@ class ToolRegistry:
         description: str,
         parameters: Dict[str, Any]
     ):
-        """注册工具（装饰器模式）"""
+        """
+        注册工具（装饰器模式）
+        
+        使用示例:
+            @registry.register(
+                name="calculator",
+                description="执行数学计算",
+                parameters={...}
+            )
+            def calculator(expression: str):
+                return eval(expression)
+        """
         def decorator(func: Callable):
             self.tools[name] = ToolDefinition(
                 name=name,
@@ -2785,255 +4487,991 @@ class ToolRegistry:
                 parameters=parameters,
                 function=func
             )
+            logger.info(f"工具已注册: {name}")
             return func
         return decorator
     
-    def get_tool(self, name: str) -> ToolDefinition:
+    def register_tool(self, tool: ToolDefinition):
+        """直接注册工具对象"""
+        self.tools[tool.name] = tool
+        logger.info(f"工具已注册: {tool.name}")
+    
+    def unregister(self, name: str):
+        """注销工具"""
+        if name in self.tools:
+            del self.tools[name]
+            logger.info(f"工具已注销: {name}")
+    
+    def get_tool(self, name: str) -> Optional[ToolDefinition]:
         """获取工具"""
         return self.tools.get(name)
     
     def list_tools(self) -> List[Dict]:
-        """列出所有工具（OpenAI函数调用格式）"""
-        return [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters
-            }
-            for tool in self.tools.values()
-        ]
+        """列出所有工具（OpenAI格式）"""
+        return [tool.to_openai_format() for tool in self.tools.values()]
+    
+    def get_tools_description(self) -> str:
+        """获取工具描述（用于Prompt）"""
+        descriptions = []
+        for tool in self.tools.values():
+            descriptions.append(f"- {tool.name}: {tool.description}")
+        return "\n".join(descriptions)
 ```
 
-**工具注册示例**：
+**内置工具定义**：
 
 ```python
-# Backend/app/core/agent/builtin_tools.py
-from app.core.agent.tool_registry import ToolRegistry
+# Backend/app/core/agent/builtin_tools.py（新增，180行）
+from app.core.agent.tool_definition import ToolRegistry
+from app.services.knowledge_base_service import KnowledgeBaseService
+from app.core.retrieval.retriever_manager import RetrieverManager
+from datetime import datetime
+import logging
 
+logger = logging.getlogger(__name__)
+
+# 全局注册表
 registry = ToolRegistry()
+
 
 @registry.register(
     name="knowledge_search",
-    description="在知识库中搜索信息",
+    description="在知识库中搜索相关文档和信息。适用于查询项目文档、技术资料等。",
     parameters={
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "搜索查询"},
-            "kb_id": {"type": "integer", "description": "知识库ID"}
-        },
-        "required": ["query", "kb_id"]
-    }
-)
-async def knowledge_search(query: str, kb_id: int):
-    """知识库搜索工具"""
-    kb_service = KnowledgeBaseService()
-    results = await kb_service.search(query, kb_id, strategy="hybrid")
-    return results[:3]  # 返回前3条
-
-@registry.register(
-    name="web_search",
-    description="在互联网上搜索最新信息",
-    parameters={
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "搜索查询"}
+            "query": {
+                "type": "string",
+                "description": "搜索查询关键词或问题"
+            },
+            "kb_id": {
+                "type": "integer",
+                "description": "知识库ID（可选）。如果不指定，将搜索所有知识库"
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "返回结果数量，默认3"
+            }
         },
         "required": ["query"]
     }
 )
-async def web_search(query: str):
-    """网络搜索工具"""
-    # TODO: 集成搜索API
-    return [{"title": "示例结果", "url": "https://example.com"}]
+async def knowledge_search(query: str, kb_id: int = None, top_k: int = 3) -> str:
+    """
+    知识库搜索工具（更新：适配阶段3重构后的接口）
+    """
+    try:
+        retriever_manager = RetrieverManager()
+        
+        if kb_id:
+            # 搜索指定知识库
+            documents = await retriever_manager.retrieve(
+                query=query,
+                kb_id=kb_id,
+                strategy="hybrid",  # 使用混合检索
+                top_k=top_k
+            )
+        else:
+            # 搜索所有知识库（需要获取知识库列表）
+            from app.services.database_service import DatabaseService
+            from app.core.database import get_db_manager
+            
+            db = DatabaseService(get_db_manager())
+            kbs = await db.get_all_knowledge_bases()
+            
+            all_documents = []
+            for kb in kbs[:3]:  # 最多搜索3个知识库
+                docs = await retriever_manager.retrieve(
+                    query=query,
+                    kb_id=kb['id'],
+                    strategy="hybrid",
+                    top_k=2
+                )
+                all_documents.extend(docs)
+            
+            # 按分数排序
+            all_documents.sort(key=lambda d: d.score, reverse=True)
+            documents = all_documents[:top_k]
+        
+        if not documents:
+            return "未找到相关信息"
+        
+        # 格式化结果
+        formatted = []
+        for i, doc in enumerate(documents, 1):
+            content = doc.content[:200] + "..." if len(doc.content) > 200 else doc.content
+            source = doc.metadata.get('source', '未知')
+            score = doc.score
+            formatted.append(f"{i}. [{source}] (相关度: {score:.2%})\n{content}")
+        
+        return "\n\n".join(formatted)
+    
+    except Exception as e:
+        logger.error(f"知识库搜索失败: {str(e)}")
+        return f"搜索失败: {str(e)}"
+
+
+@registry.register(
+    name="calculator",
+    description="执行数学计算。支持基本算术运算（+、-、*、/、**）和括号。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "expression": {
+                "type": "string",
+                "description": "数学表达式，例如：'2+3*4'、'(10-5)**2'"
+            }
+        },
+        "required": ["expression"]
+    }
+)
+def calculator(expression: str) -> str:
+    """计算器工具（增强安全性）"""
+    try:
+        # 安全的数学表达式求值
+        allowed_chars = set('0123456789+-*/(). ')
+        if not all(c in allowed_chars for c in expression):
+            return "表达式包含不允许的字符"
+        
+        # 禁用内置函数
+        result = eval(expression, {"__builtins__": {}}, {})
+        return f"计算结果: {result}"
+    
+    except ZeroDivisionError:
+        return "错误：除数不能为零"
+    except Exception as e:
+        return f"计算失败: {str(e)}"
+
+
+@registry.register(
+    name="get_current_time",
+    description="获取当前日期和时间。",
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+)
+def get_current_time() -> str:
+    """获取当前时间工具"""
+    now = datetime.now()
+    return now.strftime("%Y-%m-%d %H:%M:%S 星期%w")
+
+
+@registry.register(
+    name="web_search",
+    description="在互联网上搜索最新信息（功能开发中）。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "搜索查询"
+            }
+        },
+        "required": ["query"]
+    }
+)
+async def web_search(query: str) -> str:
+    """网络搜索工具（占位符）"""
+    # TODO: 集成搜索API（Bing、Google等）
+    return "网络搜索功能开发中，暂时无法使用。"
+```
+
+**重构效果（T4.2a）**：
+- ✅ 统一ToolDefinition（支持参数验证、异步）
+- ✅ 装饰器注册模式（代码更优雅）
+- ✅ 单例ToolRegistry（全局共享）
+- ✅ OpenAI函数调用格式兼容
+
+---
+
+#### T4.2b 更新AgentService集成ToolRegistry（1天）⭐
+
+**重构方案**：
+
+```python
+# Backend/app/services/agent_service.py（重构后，简化为~250行）
+import json
+import re
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+import logging
+
+from app.core.agent.tool_definition import ToolRegistry
+from app.core.agent.builtin_tools import registry as builtin_registry
+
+logger = logging.getLogger(__name__)
+
+
+class AgentService:
+    """
+    Agent 服务 - 基于 ReAct 框架（重构版）
+    
+    改进：
+    1. 使用ToolRegistry统一管理工具
+    2. 删除旧的Tool类
+    3. 支持异步工具执行
+    """
+    
+    def __init__(self, llm_service, max_iterations: int = 5):
+        """
+        初始化 Agent
+        
+        Args:
+            llm_service: LLM 服务实例
+            max_iterations: 最大迭代次数
+        """
+        self.llm_service = llm_service
+        self.max_iterations = max_iterations
+        self.tool_registry = builtin_registry  # 使用全局注册表
+        self.conversation_history: List[Dict] = []
+    
+    def register_custom_tool(self, tool):
+        """注册自定义工具"""
+        self.tool_registry.register_tool(tool)
+    
+    def _build_prompt(self, user_query: str) -> str:
+        """构建 Agent 提示词（更新：使用ToolRegistry）"""
+        
+        # 工具列表（自动从注册表获取）
+        tools_desc = self.tool_registry.get_tools_description()
+        
+        prompt = f"""你是一个智能 Agent，能够使用工具来回答用户问题。
+
+可用工具:
+{tools_desc}
+
+请使用以下格式回答:
+
+Thought: 我需要思考如何回答这个问题
+Action: 工具名称
+Action Input: 工具的输入参数(JSON格式)
+Observation: [工具返回的结果会显示在这里]
+... (可以重复 Thought/Action/Observation 多次)
+Thought: 我现在知道最终答案了
+Final Answer: 最终答案
+
+重要规则:
+1. 必须严格按照格式输出
+2. Action Input 必须是有效的 JSON 格式
+3. 如果不需要使用工具，直接给出 Final Answer
+4. 每次只执行一个 Action
+
+用户问题: {user_query}
+
+开始!
+"""
+        return prompt
+    
+    def _parse_action(self, text: str) -> Optional[tuple]:
+        """解析 LLM 输出中的 Action"""
+        action_match = re.search(r'Action:\s*(.+?)(?:\n|$)', text, re.IGNORECASE)
+        input_match = re.search(r'Action Input:\s*(.+?)(?:\n|$)', text, re.IGNORECASE | re.DOTALL)
+        
+        if not action_match:
+            return None
+        
+        action_name = action_match.group(1).strip()
+        action_input = input_match.group(1).strip() if input_match else "{}"
+        
+        return action_name, action_input
+    
+    def _parse_final_answer(self, text: str) -> Optional[str]:
+        """解析最终答案"""
+        match = re.search(r'Final Answer:\s*(.+)', text, re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
+    
+    async def run(self, user_query: str, session_id: str = None) -> Dict[str, Any]:
+        """
+        运行 Agent（更新：使用ToolRegistry）
+        
+        Args:
+            user_query: 用户问题
+            session_id: 会话ID
+        
+        Returns:
+            {
+                "answer": "最终答案",
+                "steps": [执行步骤],
+                "success": True/False
+            }
+        """
+        steps = []
+        prompt = self._build_prompt(user_query)
+        
+        try:
+            for iteration in range(self.max_iterations):
+                logger.info(f"Agent iteration {iteration + 1}/{self.max_iterations}")
+                
+                # 调用 LLM
+                response = await self.llm_service.generate(
+                    prompt=prompt,
+                    max_tokens=500,
+                    temperature=0.1
+                )
+                
+                llm_output = response.get('text', '')
+                logger.debug(f"LLM output: {llm_output}")
+                
+                # 记录思考
+                thought_match = re.search(r'Thought:\s*(.+?)(?:\n|$)', llm_output, re.IGNORECASE)
+                if thought_match:
+                    steps.append({
+                        "type": "thought",
+                        "content": thought_match.group(1).strip()
+                    })
+                
+                # 检查最终答案
+                final_answer = self._parse_final_answer(llm_output)
+                if final_answer:
+                    steps.append({
+                        "type": "final_answer",
+                        "content": final_answer
+                    })
+                    return {
+                        "answer": final_answer,
+                        "steps": steps,
+                        "success": True,
+                        "iterations": iteration + 1
+                    }
+                
+                # 解析并执行 Action
+                action_result = self._parse_action(llm_output)
+                if action_result:
+                    action_name, action_input = action_result
+                    
+                    # 获取工具（从注册表）
+                    tool = self.tool_registry.get_tool(action_name)
+                    
+                    if tool:
+                        steps.append({
+                            "type": "action",
+                            "tool": action_name,
+                            "input": action_input
+                        })
+                        
+                        try:
+                            # 解析 JSON 输入
+                            input_params = json.loads(action_input)
+                            
+                            # 执行工具（支持异步）
+                            observation = await tool.run(**input_params)
+                        
+                        except json.JSONDecodeError:
+                            # 非 JSON，尝试作为单参数
+                            observation = await tool.run(action_input)
+                        
+                        except Exception as e:
+                            observation = f"工具执行错误: {str(e)}"
+                        
+                        steps.append({
+                            "type": "observation",
+                            "content": observation
+                        })
+                        
+                        # 更新 prompt
+                        prompt += f"\n{llm_output}\nObservation: {observation}\n"
+                    
+                    else:
+                        error_msg = f"未找到工具: {action_name}"
+                        steps.append({
+                            "type": "error",
+                            "content": error_msg
+                        })
+                        prompt += f"\n{llm_output}\nObservation: {error_msg}\n"
+                
+                else:
+                    # 没有识别到标准格式
+                    return {
+                        "answer": llm_output,
+                        "steps": steps,
+                        "success": True,
+                        "iterations": iteration + 1,
+                        "note": "未识别到标准格式，返回原始输出"
+                    }
+            
+            # 达到最大迭代次数
+            return {
+                "answer": "抱歉，我无法在限定步骤内完成任务。",
+                "steps": steps,
+                "success": False,
+                "iterations": self.max_iterations,
+                "error": "达到最大迭代次数"
+            }
+        
+        except Exception as e:
+            logger.error(f"Agent execution failed: {str(e)}")
+            return {
+                "answer": f"执行过程中发生错误: {str(e)}",
+                "steps": steps,
+                "success": False,
+                "error": str(e)
+            }
+    
+    def get_tools_info(self) -> List[Dict]:
+        """获取所有工具信息"""
+        return self.tool_registry.list_tools()
+```
+
+**重构效果（T4.2b）**：
+- ✅ 删除旧Tool类（~30行）
+- ✅ 集成ToolRegistry（解决验证问题5）
+- ✅ AgentService简化：328行 → 250行（-24%）
+- ✅ 支持异步工具执行
+
+---
+
+#### T4.2c Agent集成测试（0.5天）
+
+**测试清单**：
+
+```bash
+# 1. 工具注册测试
+pytest app/tests/test_tool_registry.py -v
+
+# 2. Agent基础功能测试
+pytest app/tests/test_agent_service.py -v
+
+# 3. 工具执行测试
+# - 知识库搜索工具
+# - 计算器工具
+# - 时间工具
+
+# 4. ReAct流程测试
+# - Thought → Action → Observation → Final Answer
+# - 多轮迭代
+# - 错误处理
+```
+
+**测试用例**：
+
+```python
+# Backend/app/tests/test_agent_service.py
+import pytest
+from app.services.agent_service import AgentService
+from app.core.agent.tool_definition import ToolRegistry, ToolDefinition
+
+@pytest.mark.asyncio
+async def test_agent_with_calculator():
+    """测试Agent使用计算器工具"""
+    agent = AgentService(mock_llm_service)
+    
+    result = await agent.run("1+1等于几？")
+    
+    assert result["success"] == True
+    assert "2" in result["answer"]
+    assert any(step["type"] == "action" and step["tool"] == "calculator" 
+               for step in result["steps"])
+
+@pytest.mark.asyncio
+async def test_tool_parameter_validation():
+    """测试工具参数验证"""
+    registry = ToolRegistry()
+    
+    @registry.register(
+        name="test_tool",
+        description="测试工具",
+        parameters={
+            "type": "object",
+            "properties": {
+                "required_param": {"type": "string"}
+            },
+            "required": ["required_param"]
+        }
+    )
+    def test_tool(required_param: str):
+        return required_param
+    
+    tool = registry.get_tool("test_tool")
+    
+    # 测试缺少必需参数
+    is_valid, error = tool.validate_input({})
+    assert is_valid == False
+    assert "required_param" in error
 ```
 
 ---
 
-### 阶段4总结
+### Week 10总结
+
+**完成内容**：
+- ✅ T4.2a：统一ToolRegistry（120行）+ 内置工具（180行）
+- ✅ T4.2b：重构AgentService（328行 → 250行）
+- ✅ T4.2c：Agent集成测试
+
+**代码量变化**：
+- ToolDefinition + ToolRegistry: 新增120行
+- builtin_tools: 新增180行
+- AgentService: 328行 → 250行（-78行，-24%）
+
+**关键修复**：
+1. ✅ 统一Tool定义（解决验证问题5）
+2. ✅ 添加参数验证（解决验证问题6）
+3. ✅ 适配新KnowledgeBaseService接口（解决验证问题7）
+4. ✅ 支持异步工具执行
+
+**时间统计**：Week 10用时3天（含测试）
+
+---
+
+---
+
+### 阶段4总结（Week 9-10）
+
+**重构目标**：
+- ✅ 提取RAG Pipeline独立模块
+- ✅ 重构ChatService（624行 → 380行）
+- ✅ 优化Agent工具管理
+
+**架构变化**：
+
+```
+重构前（chat_service.py 624行）：
+chat_service.py
+├── 对话管理（会话、历史）
+├── RAG逻辑（检索、上下文、Prompt）
+├── 混合检索（向量+图谱融合）
+├── 流式输出
+├── LLM调用（transformers + ollama）
+└── 历史消息增强逻辑（50行）
+
+重构后（模块化设计）：
+core/rag/
+└── rag_pipeline.py (200行)
+    ├── 检索协调（使用RetrieverManager）
+    ├── 上下文构建
+    ├── 消息构建（包含历史增强）
+    └── 流式输出管理
+
+core/retrieval/
+└── retriever_manager.py (更新+60行)
+    └── 混合检索（向量+图谱融合）
+
+core/agent/
+├── tool_definition.py (120行)
+│   ├── ToolDefinition（参数验证、异步支持）
+│   └── ToolRegistry（装饰器注册）
+└── builtin_tools.py (180行)
+    └── 内置工具（知识库搜索、计算器等）
+
+services/
+├── chat_service.py (380行, -39%)
+│   └── 专注会话管理
+└── agent_service.py (250行, -24%)
+    └── 使用ToolRegistry
+```
+
+**代码量统计**：
+
+| 模块 | 重构前 | 重构后 | 变化 |
+|------|--------|--------|------|
+| chat_service.py | 624行 | 380行 | -244行 (-39%) |
+| agent_service.py | 328行 | 250行 | -78行 (-24%) |
+| RAG Pipeline | 0行 | 200行 | +200行（新增） |
+| Tool系统 | 30行 | 300行 | +270行（重构） |
+| **总计** | 982行 | 1130行 | +148行（+15%）|
+
+注：代码总量略增，但模块化程度大幅提升，复用性增强
+
+**关键修复**（针对验证发现的5个问题）：
+
+1. ✅ **问题1：统一检索器获取方式**
+   - 使用RetrieverManager代替RetrieverFactory
+   - 单例模式，全局共享
+
+2. ✅ **问题2：保留历史消息增强逻辑**
+   - `_build_messages_enhanced`方法（~90行）
+   - 历史约定优先Prompt（与现有50行逻辑一致）
+   - 支持开关控制（enable_history_priority参数）
+
+3. ✅ **问题3：整合混合检索**
+   - 图谱融合逻辑迁移到RetrieverManager
+   - `_hybrid_search_with_graph`方法
+   - 自动检测图谱可用性，失败时降级
+
+4. ✅ **问题4：流式citations位置**
+   - 先发送sources再流式输出答案
+   - 与chat_service现有实现一致
+
+5. ✅ **问题5-7：Agent工具统一**
+   - 统一ToolDefinition（支持参数验证、异步）
+   - 装饰器注册模式
+   - 适配新KnowledgeBaseService接口
+
+**时间估算**：
+- Week 9：RAG Pipeline重构（5天）
+  - T4.1a：基础版（2天）
+  - T4.1b：历史增强（1天）
+  - T4.1c：图谱整合（1天）
+  - T4.1d：测试调试（1天）
+
+- Week 10：Agent优化（3天）
+  - T4.2a：ToolRegistry（1.5天）
+  - T4.2b：AgentService重构（1天）
+  - T4.2c：集成测试（0.5天）
+
+- **总计**：8天（原计划5天，+60%）
 
 **完成标准**：
-- ✅ RAG Pipeline独立模块测试通过
-- ✅ chat_service重构完成（624行 → 400行）
-- ✅ Agent工具注册表实现
-- ✅ 端到端RAG流程测试通过
+1. ✅ RAG Pipeline独立模块测试通过
+2. ✅ ChatService重构完成（624行 → 380行，-39%）
+3. ✅ Agent工具注册表实现（支持参数验证、异步）
+4. ✅ 端到端RAG流程测试通过
+5. ✅ 历史消息增强逻辑保留
+6. ✅ 混合检索（向量+图谱）正常工作
 
 **预期效果**：
-- ⬇️ chat_service: 624行 → 400行 (-36%)
-- ⬆️ RAG复用性: Pipeline可用于多种场景
+- ⬇️ chat_service: 624行 → 380行 (-39%)
+- ⬇️ agent_service: 328行 → 250行 (-24%)
+- ⬆️ RAG复用性: Pipeline可用于多种场景（chat、agent、批处理等）
 - ⬆️ Agent扩展性: 新增工具只需装饰器注册
+- ⬆️ 可测试性: 模块独立，易于单元测试
+- ⬆️ 可维护性: 职责清晰，修改局部不影响全局
 
 ---
 
-## 七、阶段5：清理与优化 (Week 11-12)
+## 七、阶段5：迁移、清理与验证 (Week 11-12)
 
 ### 目标
-🎯 删除旧代码和重复逻辑  
-🎯 性能优化与测试  
-🎯 文档补全
 
-### Week 11: 代码清理
+🎯 迁移所有旧服务调用到新架构  
+🎯 删除旧代码和废弃服务  
+🎯 回归测试与文档补全
 
-#### T5.1 删除废弃服务（2天）
+**关键修复**（针对验证发现的问题）：
 
-**待删除文件**（已被新架构替代）：
-- `transformers_service.py`（835行）→ 替换为`TransformersLLM`
-- `ollama_service.py`（部分逻辑）→ 替换为`OllamaLLM`
-- 旧的检索逻辑（分散在3个文件）→ 替换为Retriever系统
+- ✅ 新增API迁移任务（处理11处旧服务引用）
+- ✅ 调整删除旧服务的前置条件（确认引用已迁移）
+- ✅ 降低测试覆盖率目标（80% → 50%）
+- ✅ 移除性能优化任务（应在阶段1-4实现）
 
-**清理检查清单**：
+### Week 11: API迁移（5天）
+
+**核心任务**：将所有旧服务引用迁移到新架构（11处调用）
+
+#### T5.1 迁移chat_service（2天）
+
+**目标**：将chat_service从旧服务迁移到新LLM抽象层
+
+**迁移点**（2处）：
+
+```python
+# 旧代码（删除）
+from app.services.transformers_service import get_transformers_service
+from app.services.ollama_llm_service import get_ollama_llm_service
+
+transformers_svc = get_transformers_service()
+response = transformers_svc.generate(...)
+
+# 新代码（替换）
+from app.services.llm.llm_service import LLMService
+
+llm_service = LLMService()
+llm = await llm_service.get_llm(model_type, model_name)
+response = await llm.generate(prompt, **params)
+```
+
+**迁移混合检索**：
+
+```python
+# 旧代码
+from app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
+hybrid_svc = get_hybrid_retrieval_service()
+results = hybrid_svc.search(...)
+
+# 新代码
+from app.core.retrieval.retriever_manager import RetrieverManager
+retriever_mgr = RetrieverManager()
+results = await retriever_mgr.hybrid_search(...)
+```
+
+**测试**：
+
+- 单元测试：`test_chat_service_migration.py`
+- 集成测试：端到端对话流程
+
+---
+
+#### T5.2 迁移API端点（2天）
+
+**目标**：更新API路由层的服务调用
+
+**迁移清单**（6处）：
+
+**1. api/lora_training.py**（2处）
+
+```python
+# 旧
+from app.services.transformers_service import TransformersService
+transformers_service = TransformersService()
+
+# 新
+from app.core.llm.transformers_llm import TransformersLLM
+transformers_llm = TransformersLLM(...)
+```
+
+**2. api/agent.py**（1处）
+
+```python
+# 旧
+ollama_service = OllamaLLMService()
+
+# 新
+llm = await LLMService.get_llm("ollama", model_name)
+```
+
+**3. api/assistant.py**（2处）
+
+```python
+# 旧
+from app.services.ollama_llm_service import get_ollama_llm_service
+ollama_svc = get_ollama_llm_service()
+
+# 新
+from app.services.llm.llm_service import LLMService
+llm = await LLMService.get_llm("ollama", model_name)
+```
+
+**测试**：
+
+- 更新`test_05_api_endpoints.py`
+- 回归测试所有API功能
+
+---
+
+#### T5.3 迁移工具类（1天）
+
+**目标**：更新utils/services中的服务调用
+
+**迁移清单**（3处）：
+
+**1. entity_extraction_service.py**
+
+```python
+# 旧
+from app.services.ollama_llm_service import OllamaLLMService
+self.ollama = ollama_service or OllamaLLMService()
+
+# 新
+from app.services.llm.llm_service import LLMService
+self.llm_service = LLMService()
+self.llm = await self.llm_service.get_llm("ollama", ...)
+```
+
+**2. utils/semantic_splitter.py**
+
+```python
+# 旧
+from app.services.ollama_llm_service import get_ollama_llm_service
+
+# 新
+from app.services.llm.llm_service import LLMService
+```
+
+**3. model_scanner.py**
+
+```python
+# 旧
+from app.services.ollama_llm_service import get_ollama_llm_service
+
+# 新
+from app.services.llm.llm_service import LLMService
+```
+
+**验证**：
+
+- 实体提取测试
+- 语义分割测试
+- 模型扫描功能测试
+
+---
+
+#### Week 11总结
+
+**完成内容**：
+- ✅ chat_service迁移（2处引用）
+- ✅ API端点迁移（6处引用）
+- ✅ 工具类迁移（3处引用）
+- ✅ 混合检索迁移（1处引用）
+- **总计**：11处引用全部迁移完成
+
+**代码变化**：
+- 迁移代码：约300行
+- 测试代码：约200行
+
+**关键风险**：
+- ⚠️ LLM接口变化需要充分测试
+- ⚠️ 异步调用改造需要注意异常处理
+
+---
+
+### Week 12: 清理与验证（3天）
+
+#### T5.4 删除旧服务（0.5天）
+
+**前置条件**：✅ 所有11处引用已迁移完成
+
+**删除清单**（验证无引用后）：
 ```bash
-# 1. 确认所有API端点已更新
-grep -r "TransformersService" app/api/
+# 1. 最终确认无引用
+grep -r "transformers_service" app/  # 应为空
+grep -r "ollama_llm_service" app/    # 应为空
+grep -r "hybrid_retrieval_service" app/  # 应为空
 
-# 2. 确认测试全部通过
-pytest app/tests/ -v
+# 2. 删除旧文件（3个，共1474行）
+git rm app/services/transformers_service.py      # 835行
+git rm app/services/ollama_llm_service.py        # 265行
+git rm app/services/hybrid_retrieval_service.py  # 374行
 
-# 3. 删除旧文件
-git rm app/services/transformers_service.py
-
-# 4. 提交清理
-git commit -m "refactor: remove deprecated services"
+# 3. 提交清理
+git commit -m "refactor(stage5): remove deprecated services after migration"
 ```
 
 ---
 
-#### T5.2 性能优化（3天）
+#### T5.5 回归测试（1.5天）
 
-**优化项清单**：
-
-1. **模型缓存优化**
-```python
-# Backend/app/services/llm_service.py
-class LLMService:
-    def __init__(self):
-        self.llm_cache = {}  # 添加LRU缓存
-        self.max_cache_size = 3  # 最多缓存3个模型
-    
-    async def get_llm(self, model_type, model_name, **kwargs):
-        cache_key = f"{model_type}:{model_name}"
-        
-        # 缓存命中
-        if cache_key in self.llm_cache:
-            return self.llm_cache[cache_key]
-        
-        # 缓存满，移除最旧的
-        if len(self.llm_cache) >= self.max_cache_size:
-            oldest_key = next(iter(self.llm_cache))
-            await self.llm_cache[oldest_key].cleanup()
-            del self.llm_cache[oldest_key]
-        
-        # 加载新模型...
-```
-
-2. **检索性能优化**
-- 为BM25索引添加磁盘缓存（pickle）
-- 向量检索批量查询优化
-- 混合检索并行化
-
-3. **内存管理**
-```python
-# Backend/app/core/device/gpu_manager.py
-class DeviceManager:
-    def optimize_memory(self):
-        """内存优化策略"""
-        if self.device == "cuda":
-            # 清理碎片
-            torch.cuda.empty_cache()
-            
-            # 压缩内存
-            torch.cuda.memory.empty_cache()
-            
-            # 重置峰值统计
-            torch.cuda.reset_peak_memory_stats()
-```
-
----
-
-### Week 12: 测试与文档
-
-#### T5.3 完善测试覆盖（2天）
-
-**测试目标**：
-- 单元测试覆盖率: 30% → 80%
-- 集成测试: 核心流程全覆盖
-- 性能基准测试
+**目标**：确保迁移后系统功能正常
 
 **测试清单**：
 ```bash
-# 运行全部测试
-pytest app/tests/ --cov=app --cov-report=html
+# 1. 单元测试（目标覆盖率50%）
+pytest test/ -v --cov=app --cov-report=html
 
-# 核心模块覆盖率检查
-pytest app/tests/test_llm/ --cov=app/core/llm --cov-report=term-missing
+# 2. 集成测试
+pytest test/integration/ -v
 
-# 性能基准测试
-python benchmark/rag_latency.py  # RAG端到端延迟
-python benchmark/retrieval_speed.py  # 检索速度
+# 3. 端到端测试
+# - 对话流程（transformers + ollama）
+# - RAG检索（向量 + 混合 + 图谱）
+# - Agent工具调用
+# - LoRA训练/推理
+# - 实体提取
+# - 语义分割
+```
+
+**验收标准**：
+- ✅ 所有测试通过（0失败）
+- ✅ 核心模块覆盖率 ≥ 50%
+- ✅ 无API功能退化
+- ✅ 无性能明显下降（±10%以内）
+
+**测试重点**：
+```python
+# 1. LLM接口兼容性
+assert new_llm.generate() == old_service.generate()
+
+# 2. 检索结果一致性
+assert new_retriever.search() ≈ old_retrieval.search()
+
+# 3. 异步调用正确性
+await test_async_chat_flow()
+
+# 4. 错误处理完整性
+try:
+    await llm.generate(invalid_params)
+except Exception as e:
+    assert isinstance(e, ExpectedException)
 ```
 
 ---
 
-#### T5.4 文档补全（1天）
+#### T5.6 文档更新（1天）
+
+**目标**：补全重构文档
 
 **文档清单**：
-1. **API文档更新**（Swagger注释）
-2. **架构图更新**（绘制新的4层架构图）
-3. **迁移指南**（旧API → 新API对照表）
-4. **性能报告**（重构前后对比）
 
-**示例迁移指南**：
-```markdown
-# API迁移指南
+1. **API迁移指南**（新增，~200行）
+   ```markdown
+   # 服务迁移指南
+   
+   ## 旧服务 → 新架构对照
+   
+   ### TransformersService → TransformersLLM
+   - 旧：`get_transformers_service().generate(...)`
+   - 新：`await LLMService.get_llm("transformers", ...).generate(...)`
+   
+   ### OllamaLLMService → OllamaLLM
+   - 旧：`OllamaLLMService().chat(...)`
+   - 新：`await LLMService.get_llm("ollama", ...).chat(...)`
+   
+   ### HybridRetrievalService → RetrieverManager
+   - 旧：`get_hybrid_retrieval_service().search(...)`
+   - 新：`await RetrieverManager().hybrid_search(...)`
+   ```
 
-## 旧版 → 新版对照
+2. **架构文档更新**（~150行）
+   - 4层架构图（更新）
+   - 模块依赖关系图
+   - 服务调用流程图
 
-### 1. 对话接口
-**旧版**:
-```python
-POST /api/chat
-{
-    "message": "你好",
-    "model": "transformers",
-    "kb_id": 1
-}
-```
+3. **测试报告**（~100行）
+   - 测试覆盖率数据
+   - 回归测试结果
+   - 性能对比（如有基准）
 
-**新版**:
-```python
-POST /api/chat
-{
-    "session_id": 123,
-    "message": "你好",
-    "kb_id": 1,
-    "strategy": "hybrid"  # 新增：检索策略
-}
-```
-
-### 2. 模型管理
-**旧版**: `/api/transformers/load_model`  
-**新版**: `/api/llm/load` （统一所有模型类型）
-```
+4. **重构总结**（~100行）
+   - 代码量变化统计
+   - 已删除文件清单
+   - 遗留问题与后续优化
 
 ---
 
 ### 阶段5总结
 
+**重构目标**：
+1. ✅ 迁移所有旧服务调用（11处 → 0处）
+2. ✅ 删除废弃服务文件（3个，1474行）
+3. ✅ 回归测试验证（覆盖率≥50%）
+4. ✅ 补全迁移文档
+
+**时间估算**：
+- Week 11：API迁移（5天）
+  - T5.1：chat_service迁移（2天）
+  - T5.2：API端点迁移（2天）
+  - T5.3：工具类迁移（1天）
+- Week 12：清理验证（3天）
+  - T5.4：删除旧服务（0.5天）
+  - T5.5：回归测试（1.5天）
+  - T5.6：文档更新（1天）
+- **总计**：8天
+
+**代码量变化**：
+
+| 类别 | 删除 | 新增 | 净变化 |
+|------|------|------|--------|
+| 旧服务文件 | -1474行 | 0 | -1474行 |
+| 迁移代码 | 0 | +300行 | +300行 |
+| 测试代码 | 0 | +200行 | +200行 |
+| 文档 | 0 | +550行 | +550行 |
+| **总计** | -1474行 | +1050行 | **-424行** |
+
+注：净减少424行，代码质量提升
+
 **完成标准**：
-- ✅ 所有旧代码已删除
-- ✅ 测试覆盖率达到80%
-- ✅ 性能基准无下降（部分提升）
-- ✅ 文档全部更新
+1. ✅ 所有11处旧服务引用已迁移
+2. ✅ 旧服务文件已删除（transformers_service.py, ollama_llm_service.py, hybrid_retrieval_service.py）
+3. ✅ 回归测试全部通过（0失败）
+4. ✅ 核心模块测试覆盖率 ≥ 50%
+5. ✅ API功能无退化
+6. ✅ API迁移指南完成
+7. ✅ 架构文档更新
 
-**最终效果统计**：
+**关键修复**（针对验证问题）：
+1. ✅ **问题1-时序冲突**：新增Week 11（5天）API迁移任务，处理11处引用后再删除
+2. ✅ **问题2-性能优化**：移除T5.2性能优化（应在阶段1-4实现）
+3. ✅ **问题3-测试覆盖**：降低目标（80% → 50%），聚焦核心模块
 
-| 指标 | 重构前 | 重构后 | 改进 |
-|------|--------|--------|------|
-| 代码总量 | 6738行 | 4500行 | -33% |
-| 最大文件 | 835行 | 400行 | -52% |
-| 重复率 | 25% | 8% | -68% |
-| 测试覆盖率 | 30% | 80% | +167% |
-| 模块数 | 18 | 25 | +39% (拆分后) |
-| 平均文件大小 | 374行 | 180行 | -52% |
+**预期效果**：
+- ⬇️ 代码总量：-424行（-5.9%）
+- ⬇️ 服务层文件数：18个 → 15个（-3个旧服务）
+- ⬆️ 架构清晰度：消除旧服务依赖
+- ⬆️ 可维护性：统一LLM抽象层，统一检索管理
+- ⬆️ 测试覆盖：30% → 50%（+67%）
 
 ---
 
@@ -3706,6 +6144,63 @@ await metadata.update_file_metadata(
 ---
 
 **版本历史**：
+
+- v3.5 (2025-01-24): 阶段5迁移清理层设计修复版 ⭐
+  - ✅ 修复时序冲突：新增Week 11（5天）API迁移任务，处理11处旧服务引用后再删除
+  - ✅ 调整删除前置：T5.4删除旧服务需确认所有引用已迁移（grep验证）
+  - ✅ 降低测试目标：覆盖率从80%→50%，聚焦核心模块，时间从2天→1.5天
+  - ✅ 移除性能优化：原T5.2性能优化应在阶段1-4实现，阶段5不再包含
+  - ✅ 重构Week 11任务：
+    - T5.1：迁移chat_service（2天，2处引用）
+    - T5.2：迁移API端点（2天，6处引用）
+    - T5.3：迁移工具类（1天，3处引用）
+  - ✅ 重构Week 12任务：
+    - T5.4：删除旧服务（0.5天，确认无引用）
+    - T5.5：回归测试（1.5天，覆盖率≥50%）
+    - T5.6：文档更新（1天，补充迁移指南）
+  - ✅ 时间保持8天不变：Week 11（5天）+ Week 12（3天）
+  - ✅ 关键改进：
+    - 删除旧服务：3个文件，1474行
+    - 迁移代码：+300行
+    - 测试代码：+200行
+    - 文档补充：+550行（含迁移指南）
+    - 净减少：-424行（-5.9%）
+- v3.4 (2025-01-24): 阶段4应用层设计修复版 ⭐
+  - ✅ 拆分Week 9为4个子任务：T4.1a基础版(2天) + T4.1b历史增强(1天) + T4.1c图谱整合(1天) + T4.1d测试(1天)
+  - ✅ 修复检索器获取方式：使用RetrieverManager代替RetrieverFactory（单例模式）
+  - ✅ 保留历史消息增强逻辑：新增`_build_messages_enhanced`方法（90行），完全兼容现有50行Prompt构建
+  - ✅ 整合混合检索：将图谱融合逻辑迁移到RetrieverManager的`_hybrid_search_with_graph`方法
+  - ✅ 统一Agent工具定义：ToolDefinition支持参数验证、异步执行，ToolRegistry装饰器注册模式
+  - ✅ 时间调整：Week 9-10从5天延长到8天（+60%），反映实际复杂度
+  - ✅ 更新阶段4总结：新增架构对比图、代码量统计、5个关键修复说明
+  - ✅ 关键改进：
+    - ChatService: 624行 → 380行（-39%）
+    - AgentService: 328行 → 250行（-24%）
+    - RAG Pipeline: 新增200行（独立可复用）
+    - Tool系统: 30行 → 300行（重构为完整体系）
+- v3.3 (2025-01-24): 阶段3业务层设计修复版 ⭐
+  - ✅ 拆分DocumentService：将职责过重的DocumentService（200行）拆分为3个独立服务
+    - DocumentService（120行）：纯文档管理（CRUD）
+    - ChunkingService（150行）：文本分块逻辑
+    - VectorizationService（180行）：向量化管理
+  - ✅ 解决命名冲突：将RetrievalService重命名为RetrieverManager，避免与BaseRetriever接口混淆
+  - ✅ 独立知识图谱：GraphService（180行）完全独立，不依赖KnowledgeBase
+  - ✅ 时间调整：Week 6-8从15天延长到18.5天（建议20天），反映实际工作量
+  - ✅ 更新阶段3总结：新增Week 8总结，完善架构变化图示
+  - ✅ 关键改进：统一检索逻辑管理，简化KnowledgeBaseService和ChatService的调用
+- v3.2 (2025-01-24): 阶段2设计修复版 ⭐
+  - ✅ 新增ConfigManager模块：统一管理量化配置和生成配置（100行）
+  - ✅ 重命名GenerationEngine → InferenceEngine：明确职责为纯推理逻辑（150行）
+  - ✅ 调整拆分结构：6个模块 → 7个模块（增加ConfigManager）
+  - ✅ 时间调整：Week 4-5从10天延长到12天（+2天用于配置管理和兼容层）
+  - ✅ 更新阶段2总结：反映修复后的结构和风险控制措施
+  - ✅ 关键改进：TransformersLLM不再直接实现生成逻辑，而是协调各模块
+- v3.1 (2025-01-24): 可行性验证与设计完善版 ⭐⭐
+  - ✅ 验证阶段0-1基础层：分析transformers_service、embedding_service的设备管理和模型加载需求
+  - ✅ 完善DeviceManager设计：补充MPS支持（Apple Silicon）、GPU名称查询、设备类型判断属性
+  - ✅ 完善ModelLoader设计：补充模型大小估算、小模型优化、Flash Attention、Tokenizer容错、显存监控、模型缓存管理、LoRA加载等7个关键功能
+  - ✅ 关键发现：17处设备使用、18处torch.cuda调用、7个模型加载优化功能，必须完整迁移
+  - ✅ 验证结论：基础层设计可行，但需要从简化版升级为生产级（包含所有现有优化）
 - v3.0 (2025-01-27): ⭐⭐⭐架构优化版，系统性重组12周计划
   - 修正模块归属：model_mgmt/training移至Week 3-5模型层，graph/vector_store移至Week 6-7业务层
   - 明确说明：所有"简化"均为架构优化（删除重复代码、提取公共模块），不删除业务功能
@@ -3715,4 +6210,5 @@ await metadata.update_file_metadata(
 - v2.1 (2025-01-26): 优化服务层结构，按7大模块分类
 - v2.0 (2025-01-26): 精简实施版，补充文件结构对比
 - v1.0 (2025-01-25): 初始版本
+
 
