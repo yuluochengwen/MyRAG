@@ -7,6 +7,9 @@ echo   MyRAG 测试套件
 echo ========================================
 echo.
 
+REM 切换到项目根目录
+cd /d "%~dp0\.."
+
 REM 激活conda环境
 echo [1/2] 激活 Conda 环境 MyRAG...
 call E:\Anaconda\Scripts\activate.bat MyRAG 2>nul
@@ -21,7 +24,7 @@ echo.
 REM 运行测试
 echo [2/2] 运行测试...
 cd test
-E:\Anaconda\envs\MyRAG\python.exe test_runner.py
+python test_runner.py
 
 echo.
 echo ========================================

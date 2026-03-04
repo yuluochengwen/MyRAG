@@ -7,8 +7,10 @@ app:
   port: 8000
   cors_origins:
     - "http://localhost"
+    - "http://localhost:8000"
     - "http://localhost:3000"
     - "http://127.0.0.1"
+    - "http://127.0.0.1:8000"
 
 # 文件配置
 file:
@@ -22,7 +24,7 @@ file:
     - .doc
     - .html
     - .json
-  upload_dir: "KnowledgeBase"  # 相对于项目根目录MyRAG/
+  upload_dir: "data/knowledge_base"  # 相对于项目根目录MyRAG/
 
 # 文本处理配置
 text_processing:
@@ -44,14 +46,14 @@ text_processing:
     enabled: true  # 启用语义分割
     max_chunk_size: 800  # 语义块最大大小
     min_chunk_size: 200  # 语义块最小大小
-    ollama_model: "deepseek-v3.1:671b-cloud"  # 用于语义判断的Ollama模型
+    ollama_model: "qwen2.5:7b"  # 用于语义判断的Ollama模型
     use_for_short_text: true  # 是否对短文本使用LLM分割
     short_text_threshold: 5000  # 短文本阈值（字符数）
 
 # 向量数据库配置
 vector_db:
   type: "chroma"
-  persist_directory: "VectorDB"  # 相对于项目根目录MyRAG/
+  persist_dir: "data/vector_db"  # 相对于项目根目录MyRAG/
   collection_name_prefix: "kb_"
 
 # 嵌入模型配置
@@ -65,13 +67,13 @@ embedding:
   # Ollama配置
   ollama:
     base_url: "http://localhost:11434"
-    timeout: 30
+    timeout: 120  # 增加超时时间，实体提取等复杂任务需要较长处理时间
     default_model: "nomic-embed-text"
 
 # 日志配置
 logging:
   level: "INFO"
-  file: "logs/app.log"  # 相对于项目根目录MyRAG/
+  file: "data/logs/app.log"  # 相对于项目根目录MyRAG/
   max_bytes: 10485760  # 10MB
   backup_count: 5
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -90,6 +92,10 @@ llm:
   transformers_max_memory: 5.5  # 最大显存使用(GB), RTX 3060 6GB建议5.5
   temperature: 0.5  # 默认温度参数（0.5 质量与创造性平衡）
   max_tokens: 256  # 默认最大 tokens（从 512 降至 256，提升速度）
+  ollama:
+    base_url: "http://localhost:11434"
+    timeout: 120
+    default_model: "deepseek-v3.1:671b-cloud"
 
 # Neo4j配置
 neo4j:
@@ -105,16 +111,52 @@ neo4j:
 knowledge_graph:
   enabled: true
   provider: "neo4j"  # neo4j
+  enable_fact_nodes: false  # 是否写入Fact节点
+  cleanup_fact_nodes_on_build: true  # 每次构建后清理历史Fact节点（enable_fact_nodes=false时生效）
   
   # 实体提取配置
   entity_extraction:
     provider: "ollama"  # ollama
-    ollama_model: "deepseek-v3.1:671b-cloud"  # 使用您的云端模型
+    ollama_model: "qwen2.5:7b"  # 使用本地模型，提升稳定性
     temperature: 0.1  # 低温度保证JSON输出稳定
-    timeout: 60
+    timeout: 300
+    max_tokens: 1024
     max_retries: 3
     batch_size: 5  # 并发提取数量
     min_text_length: 50  # 最小文本长度（过短不提取）
+    schema_version: "v2"
+    enable_multilabel: true
+    keep_legacy_type_field: true
+    enable_unknown_bucket: true
+    unknown_entity_type: "Unclassified"
+    unknown_relation_type: "related_to"
+    llm_normalization_priority: true
+    alias_map: {}
+    valid_entity_types:
+      - Person
+      - Organization
+      - Location
+      - Product
+      - Concept
+      - Event
+      - Date
+      - 主体
+      - 动作/行为
+      - 属性/特征
+      - 关联对象
+      - 约束/规则
+      - Unclassified
+    valid_relation_types:
+      - 隶属/组成
+      - 执行/触发
+      - 描述/修饰
+      - 约束/限制
+      - 时空/因果
+      - works_at
+      - located_in
+      - part_of
+      - founded_by
+      - related_to
   
   # 图谱配置
   max_hops: 2  # 图遍历最大跳数
@@ -135,7 +177,46 @@ knowledge_graph:
 hybrid_retrieval:
   vector_weight: 0.6  # 向量检索权重
   graph_weight: 0.4   # 图谱检索权重
+  keyword_weight: 0.5  # 关键词检索权重（RRF融合时作为通道权重）
   enable_by_default: false  # 默认使用混合检索
+  enable_query_normalization: true  # 查询实体标准化
+  enable_compound_entity_split: true  # 复合实体拆分回退
+  graph_min_results: 1  # 图结果最小保底数量（有命中时生效）
+  diagnostics_enabled: true  # 返回图检索诊断信息
+  max_fallback_candidates: 8  # 单实体最大回退候选数
+  enable_keyword_search: true  # 启用关键词召回
+  enable_rrf_fusion: true  # 启用RRF融合
+  rrf_k: 60  # RRF常数
+  rrf_window_size: 50  # 每通道参与融合的最大候选数
+  enable_light_rerank: true  # 启用轻量重排
+  rerank_alpha: 0.7  # 轻量重排中融合分数占比
+  query_stopwords:
+    - "的"
+    - "了"
+    - "和"
+    - "与"
+    - "及"
+    - "由"
+    - "是"
+    - "是什么"
+    - "怎么"
+    - "如何"
+    - "哪些"
+    - "哪几"
+    - "吗"
+    - "呢"
+    - "啊"
+    - "呀"
+  compound_split_tokens:
+    - "的"
+    - "与"
+    - "和"
+    - "及"
+    - "由"
+    - "、"
+    - "/"
+    - "-"
+    - "_"
 
 # 数据库连接池配置
 database:
@@ -143,10 +224,3 @@ database:
   max_overflow: 20
   pool_recycle: 3600
   echo: false
-
-# LoRA训练配置
-lora:
-  enabled: true
-  web_ui_port: 7860
-  models_dir: "Models/LoRA"  # 相对于项目根目录
-  log_dir: "logs/lora_training"  # 日志目录

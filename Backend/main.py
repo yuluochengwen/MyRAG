@@ -9,8 +9,6 @@ from app.core.config import settings
 from app.core.database import db_manager
 from app.api import kb_router, ws_router, assistant_router, conversation_router
 from app.api.models import router as models_router
-from app.api.lora_training import router as lora_router
-from app.api.simple_lora import router as simple_lora_router
 from app.api.agent import router as agent_router
 from app.utils.logger import get_logger
 
@@ -72,8 +70,6 @@ app.include_router(ws_router)
 app.include_router(assistant_router)
 app.include_router(conversation_router)
 app.include_router(models_router)
-app.include_router(lora_router)
-app.include_router(simple_lora_router)
 app.include_router(agent_router)
 
 # 挂载静态文件

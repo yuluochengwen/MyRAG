@@ -155,8 +155,8 @@ async def delete_knowledge_base(
         
         # 2. 删除知识图谱数据
         try:
-            from app.services.neo4j_graph_service import Neo4jGraphService
-            graph_service = Neo4jGraphService()
+            from app.services.neo4j_graph_service import get_neo4j_graph_service
+            graph_service = get_neo4j_graph_service()
             deleted_nodes = graph_service.delete_kb_graph(kb_id)
             logger.info(f"✓ 图谱数据已删除: {deleted_nodes} 个节点")
         except Exception as e:
@@ -675,4 +675,24 @@ async def get_graph_stats(
         raise
     except Exception as e:
         logger.error(f"获取图谱统计失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{kb_id}/graph/cleanup-facts", response_model=MessageResponse)
+async def cleanup_graph_facts(
+    kb_id: int,
+    kb_service: KnowledgeBaseService = Depends(get_kb_service)
+):
+    """清理知识库Fact节点。"""
+    try:
+        kb = await kb_service.get_knowledge_base(kb_id)
+        if not kb:
+            raise HTTPException(status_code=404, detail="知识库不存在")
+
+        deleted = await kb_service.cleanup_graph_facts(kb_id)
+        return MessageResponse(message=f"Fact节点清理完成，删除 {deleted} 个节点")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"清理Fact节点失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

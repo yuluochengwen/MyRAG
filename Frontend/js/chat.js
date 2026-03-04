@@ -2,8 +2,8 @@
  * 聊天界面逻辑
  */
 
-const API_BASE_URL = 'http://localhost:8000';
-const WS_BASE_URL = 'ws://localhost:8000';
+const API_BASE_URL = '';
+const WS_BASE_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
 // 页面状态
 let currentAssistant = null;
@@ -705,11 +705,13 @@ async function sendChatRequest(query, thinkingId) {
         // 调用智能助手专用聊天API
         const memoryEnabled = document.getElementById('memoryToggle')?.checked ?? true;
         const maxHistoryTurns = memoryEnabled ? parseInt(document.getElementById('maxHistoryTurns')?.value || '10') : 0;
+        const useHybridRetrieval = document.getElementById('hybridRetrievalToggle')?.checked ?? false;
         console.log('[Chat] 发送非流式请求:', {
             conversation_id: currentConversation.id,
             query: query,
             memory_enabled: memoryEnabled,
-            max_history_turns: maxHistoryTurns
+            max_history_turns: maxHistoryTurns,
+            use_hybrid_retrieval: useHybridRetrieval
         });
         const response = await fetch(`${API_BASE_URL}/api/conversations/${currentConversation.id}/chat`, {
             method: 'POST',
@@ -718,7 +720,8 @@ async function sendChatRequest(query, thinkingId) {
                 query: query,
                 temperature: 0.7,
                 max_tokens: 2048,
-                max_history_turns: maxHistoryTurns
+                max_history_turns: maxHistoryTurns,
+                use_hybrid_retrieval: useHybridRetrieval
             })
         });
         
@@ -734,6 +737,14 @@ async function sendChatRequest(query, thinkingId) {
         
         // 显示AI回复
         appendAssistantMessage(data.answer, data.sources);
+
+        // 非流式也渲染图谱与诊断
+        const graphData = extractGraphDataFromResponse(data.sources || []);
+        if (graphData) {
+            renderKnowledgeGraph(graphData);
+            autoShowGraphPanelIfNeeded(data.sources || []);
+        }
+        renderGraphDiagnostics(data.diagnostics || null);
         
         // 后端已经保存了消息，不需要前端再次保存
         
@@ -818,6 +829,7 @@ async function sendChatRequestStream(query, thinkingId) {
                             renderKnowledgeGraph(graphData);
                             autoShowGraphPanelIfNeeded(sourcesData);
                         }
+                        renderGraphDiagnostics(chunkData.diagnostics || null);
                         
                         // 移除思考指示器，创建消息占位符
                         document.getElementById(thinkingId)?.remove();

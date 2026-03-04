@@ -32,32 +32,27 @@ env/
 *.swo
 *~
 
-# Logs
-logs/
+# Runtime Data (统一在 data/ 下)
+data/logs/
+data/vector_db/
+data/knowledge_base/*/files/
+data/knowledge_base/*/info.json
+data/training_data/
 *.log
 
 # Database
 *.db
 *.sqlite3
 
-# Vector Database
-VectorDB/
-
 # Large Model Files (超过 100MB 的模型文件)
 Models/LLM/*
 Models/Embedding/*
-Models/LoRA/*
 !Models/LLM/Modelfile.template
 
-# LLaMA-Factory Training Workspace
-LLaMA-Training/
-
-# Knowledge Base Files (用户上传的文件)
-KnowledgeBase/*/files/
-KnowledgeBase/*/info.json
-
-# Docker
+# Docker & Environment
 *.env
+*.env.local
+!.env.example
 
 # OS
 .DS_Store
@@ -67,3 +62,6 @@ Thumbs.db
 *.tmp
 *.bak
 *.swp
+
+# Dependencies cache
+Backend/.deps_ready

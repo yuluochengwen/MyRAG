@@ -6,9 +6,9 @@ import json
 import re
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
-import logging
+from app.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Tool:

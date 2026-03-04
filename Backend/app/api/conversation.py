@@ -424,7 +424,8 @@ async def chat_with_assistant(conversation_id: int, request: AssistantChatReques
             "answer": result['answer'],
             "sources": result['sources'],
             "embedding_model": result.get('embedding_model'),
-            "retrieval_count": result.get('retrieval_count', 0)
+            "retrieval_count": result.get('retrieval_count', 0),
+            "diagnostics": result.get('diagnostics')
         }
         
     except HTTPException:

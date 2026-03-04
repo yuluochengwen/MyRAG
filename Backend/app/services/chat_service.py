@@ -28,9 +28,20 @@ class ChatService:
         """
         context_parts = []
         for i, result in enumerate(search_results, 1):
+            metadata = result.get('metadata', {}) or {}
+            evidence_chunks = metadata.get('evidence_chunks') or []
+            channel_text = ""
+            channels = result.get('channels') or metadata.get('channels')
+            if channels:
+                channel_text = f" (通道: {', '.join(channels) if isinstance(channels, list) else str(channels)})"
+
+            evidence_text = ""
+            if isinstance(evidence_chunks, list) and evidence_chunks:
+                evidence_text = f"\n证据块: {', '.join([str(item) for item in evidence_chunks[:5]])}"
+
             context_parts.append(
-                f"[文档{i}] (相似度: {result['similarity']:.2%})\n"
-                f"{result['content']}\n"
+                f"[文档{i}] (相似度: {result['similarity']:.2%}){channel_text}\n"
+                f"{result['content']}{evidence_text}\n"
             )
         return "\n".join(context_parts)
     
@@ -182,6 +193,7 @@ class ChatService:
             embedding_model = None
             search_results = []
             retrieval_method = "none"
+            retrieval_diagnostics = None
             
             # 1. 如果指定了知识库，进行检索
             if kb_ids and len(kb_ids) > 0:
@@ -195,11 +207,13 @@ class ChatService:
                     # 混合检索（向量+图谱）
                     logger.info(f"开始混合检索: kb_ids={kb_ids}, query='{query}'")
                     retrieval_method = "hybrid"
-                    search_results = await self._hybrid_search(
+                    hybrid_payload = await self._hybrid_search(
                         kb_ids=kb_ids,
                         query=query,
                         top_k=top_k
                     )
+                    search_results = hybrid_payload.get('results', [])
+                    retrieval_diagnostics = hybrid_payload.get('diagnostics')
                 else:
                     # 纯向量检索
                     logger.info(f"开始向量检索: kb_ids={kb_ids}, query='{query}'")
@@ -221,7 +235,8 @@ class ChatService:
                     'sources': [],
                     'embedding_model': embedding_model,
                     'retrieval_count': 0,
-                    'retrieval_method': retrieval_method
+                    'retrieval_method': retrieval_method,
+                    'diagnostics': retrieval_diagnostics
                 }
             
             # 3. 构建上下文
@@ -250,12 +265,14 @@ class ChatService:
                         'content': r['content'][:200] + ('...' if len(r['content']) > 200 else ''),
                         'similarity': r.get('similarity', r.get('score', 0)),
                         'file_id': r.get('metadata', {}).get('file_id'),
-                        'source': r.get('source', 'unknown')
+                        'source': r.get('source', 'unknown'),
+                        'metadata': r.get('metadata', {})
                     }
                     for r in search_results[:3]  # 只返回前3个来源
                 ],
                 'embedding_model': embedding_model,
-                'retrieval_count': len(search_results)
+                'retrieval_count': len(search_results),
+                'diagnostics': retrieval_diagnostics
             }
             
         except ValueError:
@@ -400,6 +417,7 @@ class ChatService:
         try:
             embedding_model = None
             search_results = []
+            retrieval_diagnostics = None
             
             # 1. 如果指定了知识库，进行RAG检索
             if kb_ids and len(kb_ids) > 0:
@@ -408,11 +426,13 @@ class ChatService:
                 # 判断使用哪种检索方式
                 if use_hybrid_retrieval:
                     # 混合检索（向量+图谱）
-                    search_results = await self._hybrid_search(
+                    hybrid_payload = await self._hybrid_search(
                         kb_ids=kb_ids,
                         query=query,
                         top_k=top_k
                     )
+                    search_results = hybrid_payload.get('results', [])
+                    retrieval_diagnostics = hybrid_payload.get('diagnostics')
                 else:
                     # 纯向量检索
                     search_results = await self.kb_service.search_knowledge_bases(
@@ -445,7 +465,8 @@ class ChatService:
                     "data": {
                         "sources": sources,
                         "retrieval_count": len(search_results),
-                        "embedding_model": embedding_model
+                        "embedding_model": embedding_model,
+                        "diagnostics": retrieval_diagnostics
                     }
                 }
             
@@ -555,7 +576,7 @@ class ChatService:
         kb_ids: List[int],
         query: str,
         top_k: int = 5
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         混合检索（向量+图谱）
         
@@ -574,26 +595,41 @@ class ChatService:
             # 检查是否启用知识图谱
             if not settings.knowledge_graph.enabled:
                 logger.warning("知识图谱未启用，降级为纯向量检索")
-                return await self.kb_service.search_knowledge_bases(
+                fallback_results = await self.kb_service.search_knowledge_bases(
                     kb_ids=kb_ids,
                     query=query,
                     top_k=top_k,
                     score_threshold=0.2
                 )
+                return {
+                    'results': fallback_results,
+                    'diagnostics': {
+                        'query': query,
+                        'fallback': 'vector',
+                        'reason': 'knowledge_graph_disabled'
+                    }
+                }
             
             hybrid_service = get_hybrid_retrieval_service()
             
             # 如果有多个知识库，对每个库分别检索后合并
             all_results = []
+            all_diagnostics = []
             
             for kb_id in kb_ids:
-                results = await hybrid_service.hybrid_search(
+                payload = await hybrid_service.hybrid_search(
                     kb_id=kb_id,
                     query=query,
                     top_k=top_k,
                     enable_graph=True
                 )
+                results = payload.get('results', [])
+                diagnostics = payload.get('diagnostics', {})
                 all_results.extend(results)
+                all_diagnostics.append({
+                    'kb_id': kb_id,
+                    **diagnostics
+                })
             
             # 按最终分数排序并返回top_k
             all_results.sort(key=lambda x: x.get('final_score', x.get('score', 0)), reverse=True)
@@ -601,23 +637,41 @@ class ChatService:
             # 格式化为标准检索结果格式
             formatted_results = []
             for result in all_results[:top_k]:
+                metadata = result.get('metadata', {}) or {}
+                channels = result.get('channels')
+                if channels and isinstance(metadata, dict):
+                    metadata = {**metadata, 'channels': channels}
                 formatted_results.append({
                     'content': result['content'],
                     'similarity': result.get('final_score', result.get('score', 0)),
-                    'metadata': result.get('metadata', {}),
+                    'metadata': metadata,
                     'source': result.get('source', 'unknown'),
                     'chunk_id': result.get('chunk_id')
                 })
             
-            return formatted_results
+            return {
+                'results': formatted_results,
+                'diagnostics': {
+                    'query': query,
+                    'kb_diagnostics': all_diagnostics
+                }
+            }
             
         except Exception as e:
             logger.error(f"混合检索失败，降级为向量检索: {str(e)}")
             # 降级为纯向量检索
-            return await self.kb_service.search_knowledge_bases(
+            fallback_results = await self.kb_service.search_knowledge_bases(
                 kb_ids=kb_ids,
                 query=query,
                 top_k=top_k,
                 score_threshold=0.2
             )
+            return {
+                'results': fallback_results,
+                'diagnostics': {
+                    'query': query,
+                    'error': str(e),
+                    'fallback': 'vector'
+                }
+            }
 

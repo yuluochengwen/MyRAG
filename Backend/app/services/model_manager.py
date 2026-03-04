@@ -16,7 +16,6 @@ class ModelManager:
         self.db = db_manager
         self.llm_dir = BASE_DIR / "Models" / "LLM"
         self.embedding_dir = BASE_DIR / "Models" / "Embedding"
-        self.lora_dir = BASE_DIR / "Models" / "LoRA"
     
     async def check_embedding_model_usage(self, model_name: str) -> Dict[str, any]:
         """
@@ -159,39 +158,6 @@ class ModelManager:
                 "message": f"删除失败: {str(e)}"
             }
     
-    async def delete_lora_model(self, model_name: str) -> Dict[str, any]:
-        """
-        删除LoRA模型
-        
-        Args:
-            model_name: 模型名称
-            
-        Returns:
-            删除结果
-        """
-        try:
-            # LoRA模型暂时不检查使用情况（未来可扩展）
-            model_path = self.lora_dir / model_name
-            if not model_path.exists():
-                return {
-                    "success": False,
-                    "message": f"LoRA模型 '{model_name}' 不存在"
-                }
-            
-            shutil.rmtree(model_path)
-            logger.info(f"LoRA模型已删除: {model_name}")
-            
-            return {
-                "success": True,
-                "message": f"LoRA模型 '{model_name}' 删除成功"
-            }
-        except Exception as e:
-            logger.error(f"删除LoRA模型失败: {str(e)}")
-            return {
-                "success": False,
-                "message": f"删除失败: {str(e)}"
-            }
-    
     async def get_statistics(self) -> Dict[str, any]:
         """
         获取模型统计信息
@@ -204,18 +170,15 @@ class ModelManager:
             
             embedding_models = model_scanner.scan_embedding_models()
             llm_models = model_scanner.scan_llm_models()
-            lora_models = model_scanner.scan_lora_models()
             
             # 计算总大小
             total_size = sum(m["size_bytes"] for m in embedding_models)
             total_size += sum(m["size_bytes"] for m in llm_models)
-            total_size += sum(m["size_bytes"] for m in lora_models)
             
             return {
                 "embedding_count": len(embedding_models),
                 "llm_count": len(llm_models),
-                "lora_count": len(lora_models),
-                "total_count": len(embedding_models) + len(llm_models) + len(lora_models),
+                "total_count": len(embedding_models) + len(llm_models),
                 "total_size_bytes": total_size,
                 "total_size": model_scanner._format_size(total_size)
             }

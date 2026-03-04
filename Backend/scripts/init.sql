@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS text_chunks (
     UNIQUE KEY uk_vector_id (vector_id),
     INDEX idx_kb_id (kb_id),
     INDEX idx_file_id (file_id),
-    INDEX idx_chunk_index (chunk_index)
+    INDEX idx_chunk_index (chunk_index),
+    FULLTEXT KEY ft_content (content)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文本块表';
 
 -- 处理日志表

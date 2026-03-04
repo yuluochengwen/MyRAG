@@ -4,14 +4,14 @@ Agent API - Agent 智能体接口
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-import logging
 
 from app.services.agent_service import AgentService
 from app.core.database import get_db
 from app.services.ollama_llm_service import OllamaLLMService
 from app.services.knowledge_base_service import KnowledgeBaseService
+from app.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/agent", tags=["Agent"])
 

@@ -1,0 +1,3 @@
+{"kb_id": 1, "query": "设备如何开机", "relevant_chunk_ids": ["file_1_chunk_0"], "relevant_keywords": ["电源键", "开机"]}
+{"kb_id": 1, "query": "某产品的约束规则是什么", "relevant_chunk_ids": ["file_2_chunk_3"], "relevant_keywords": ["约束", "限制", "规则"]}
+{"kb_id": 2, "query": "组织与地点的关联", "relevant_chunk_ids": ["file_8_chunk_1"], "relevant_keywords": ["Organization", "Location", "located_in"]}

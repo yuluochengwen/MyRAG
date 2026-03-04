@@ -1,4 +1,5 @@
 """Ollama LLM服务"""
+import asyncio
 import requests
 from typing import List, Dict, Optional, AsyncGenerator
 from app.core.config import settings
@@ -11,8 +12,11 @@ class OllamaLLMService:
     """Ollama LLM服务"""
     
     def __init__(self):
-        # 从配置中获取Ollama设置（复用embedding的ollama配置）
-        ollama_config = getattr(settings.embedding, 'ollama', None)
+        # 优先读取 llm.ollama；兼容旧配置 embedding.ollama
+        ollama_config = getattr(settings.llm, 'ollama', None)
+        if not ollama_config:
+            ollama_config = getattr(settings.embedding, 'ollama', None)
+
         if ollama_config:
             self.base_url = ollama_config.get('base_url', 'http://localhost:11434')
             self.timeout = ollama_config.get('timeout', 30)
@@ -127,7 +131,9 @@ class OllamaLLMService:
         model: str,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        timeout: Optional[int] = None,
+        response_format: Optional[str] = None
     ) -> str:
         """
         使用Ollama进行对话
@@ -142,9 +148,6 @@ class OllamaLLMService:
             生成的回答
         """
         try:
-            if not self.is_available():
-                raise RuntimeError("Ollama服务不可用，请确保Ollama已启动")
-            
             logger.info(f"Ollama对话开始: model={model}, messages={len(messages)}条, temperature={temperature}")
             
             # 构建Ollama API请求
@@ -156,15 +159,19 @@ class OllamaLLMService:
                     "temperature": temperature
                 }
             }
+
+            if response_format == "json":
+                payload["format"] = "json"
             
             if max_tokens:
                 payload["options"]["num_predict"] = max_tokens
             
             # 调用Ollama Chat API
-            response = requests.post(
+            response = await asyncio.to_thread(
+                requests.post,
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=self.timeout
+                timeout=timeout if timeout is not None else self.timeout
             )
             
             if response.status_code != 200:

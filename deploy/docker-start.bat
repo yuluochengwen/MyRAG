@@ -5,6 +5,9 @@ echo MyRAG Docker Deployment Script
 echo ========================================
 echo.
 
+:: Navigate to project root (docker-compose.yml is there)
+cd /d "%~dp0\.."
+
 :: Check if Docker is running
 docker version >nul 2>&1
 if %errorlevel% neq 0 (

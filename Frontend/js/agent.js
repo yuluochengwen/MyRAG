@@ -2,7 +2,7 @@
 
 class AgentChat {
     constructor() {
-        this.apiUrl = 'http://localhost:8000/api/agent';
+        this.apiUrl = '/api/agent';
         this.sessionId = this.generateSessionId();
         this.init();
     }

@@ -75,6 +75,7 @@ def main():
         from test_03_services import test_services
         from test_04_vector_store import test_vector_store
         from test_06_text_splitting import test_text_splitting
+        from test_07_entity_extraction import test_entity_extraction_enhanced
         
         # 运行测试（按模块）
         runner.run_test_module("01. 配置加载", test_config)
@@ -82,6 +83,7 @@ def main():
         runner.run_test_module("03. 服务单例", test_services)
         runner.run_test_module("04. 向量存储", test_vector_store)
         runner.run_test_module("06. 文本分割", test_text_splitting)
+        runner.run_test_module("07. 实体抽取增强", test_entity_extraction_enhanced)
         
     except ImportError as e:
         print(f"❌ 导入测试模块失败: {e}")

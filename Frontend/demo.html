@@ -567,7 +567,6 @@
         <nav class="flex space-x-8">
           <button class="model-tab-btn py-4 px-1 border-b-2 border-primary text-primary font-medium" data-tab="embedding-models">嵌入模型</button>
           <button class="model-tab-btn py-4 px-1 border-b-2 border-transparent text-gray-500 hover:text-primary hover:border-primary/30 font-medium" data-tab="llm-models">LLM模型</button>
-          <button class="model-tab-btn py-4 px-1 border-b-2 border-transparent text-gray-500 hover:text-primary hover:border-primary/30 font-medium" data-tab="lora-models">LoRA模型</button>
         </nav>
       </div>
       
@@ -922,90 +921,8 @@
         </div>
       </div>
       
-      <!-- LoRA模型管理 -->
-      <div id="lora-models-tab" class="model-tab-content hidden">
-        <div class="bg-white rounded-xl card-shadow overflow-hidden mb-6">
-          <div class="p-6 border-b border-gray-100">
-            <div class="flex justify-between items-center">
-              <h2 class="text-xl font-bold">LoRA模型</h2>
-              <div class="relative">
-                <input type="text" placeholder="搜索LoRA模型..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-64 transition-custom">
-                <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-              </div>
-            </div>
-          </div>
-          
-          <div class="overflow-x-auto">
-            <table class="min-w-full">
-              <thead>
-                <tr class="bg-gray-50">
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">模型名称</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">基础模型</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">秩</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">大小</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">创建时间</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
-                </tr>
-              </thead>
-              <tbody class="bg-white divide-y divide-gray-200">
-                <tr>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <div class="flex items-center">
-                      <div class="w-10 h-10 rounded-lg bg-yellow-100 flex items-center justify-center mr-4">
-                        <i class="fa fa-cogs text-yellow-500"></i>
-                      </div>
-                      <div>
-                        <div class="font-medium text-gray-900">产品知识LoRA</div>
-                        <div class="text-sm text-gray-500">product-knowledge-lora</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    Llama-2-7B
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    16
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    128MB
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    2023-08-05
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <div class="flex space-x-2">
-                      <button class="text-primary hover:text-primary/80">查看</button>
-                      <button class="text-gray-500 hover:text-gray-700">应用</button>
-                      <button class="text-danger hover:text-danger/80">删除</button>
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <div class="flex items-center">
-                      <div class="w-10 h-10 rounded-lg bg-yellow-100 flex items-center justify-center mr-4">
-                        <i class="fa fa-cogs text-yellow-500"></i>
-                      </div>
-                      <div>
-                        <div class="font-medium text-gray-900">代码生成LoRA</div>
-                        <div class="text-sm text-gray-500">code-generation-lora</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    CodeLlama-7B
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full">已部署</span>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    32
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    256MB
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-
+    </section>
+
+  </main>
+</body>
+</html>

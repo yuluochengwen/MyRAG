@@ -2,6 +2,7 @@
 import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from uuid import uuid4
 from app.core.database import DatabaseManager
 from app.models.knowledge_base import KnowledgeBase
 from app.core.config import settings
@@ -86,7 +87,7 @@ class KnowledgeBaseService:
     ) -> List[KnowledgeBase]:
         """
         获取知识库列表
-        
+
         Args:
             skip: 跳过数量
             limit: 返回数量
@@ -154,9 +155,7 @@ class KnowledgeBaseService:
         
         Args:
             kb_id: 知识库ID
-            
-        Returns:
-            是否成功
+
         """
         try:
             # 删除关联的文件记录
@@ -459,6 +458,23 @@ class KnowledgeBaseService:
                 return {'status': 'no_content'}
             
             logger.info(f"开始构建图谱: kb_id={kb_id}, chunks={len(texts_with_ids)}")
+            run_id = f"kg_{uuid4().hex[:12]}"
+
+            # 先导入Chunk节点，作为后续实体/关系证据锚点
+            chunk_nodes = []
+            for chunk in chunks:
+                chunk_id = chunk.get('id')
+                metadata = chunk.get('metadata', {}) or {}
+                if not chunk_id:
+                    continue
+                chunk_nodes.append({
+                    'chunk_id': chunk_id,
+                    'file_id': metadata.get('file_id'),
+                    'chunk_index': metadata.get('chunk_index')
+                })
+
+            if chunk_nodes:
+                graph_service.batch_import_chunks(kb_id=kb_id, chunks=chunk_nodes, run_id=run_id)
             
             # 批量提取实体和关系
             extraction_results = await entity_service.batch_extract(
@@ -468,25 +484,52 @@ class KnowledgeBaseService:
             
             # 合并提取结果
             all_entities, all_relations = entity_service.merge_extraction_results(extraction_results)
+
+            unknown_entity_type = settings.knowledge_graph.entity_extraction.unknown_entity_type
+            unknown_relation_type = settings.knowledge_graph.entity_extraction.unknown_relation_type
+            unknown_entity_count = sum(1 for entity in all_entities if entity.get('type') == unknown_entity_type)
+            unknown_relation_count = sum(1 for relation in all_relations if relation.get('relation') == unknown_relation_type)
+            normalized_merge_count = sum(
+                max(0, int(entity.get('attributes', {}).get('mention_count', 1)) - 1)
+                for entity in all_entities
+            )
             
             if not all_entities:
                 logger.warning("未提取到任何实体")
                 return {
                     'status': 'no_entities',
-                    'chunks_processed': len(texts_with_ids)
+                    'chunks_processed': len(texts_with_ids),
+                    'run_id': run_id
                 }
             
             # 批量导入到Neo4j
-            entity_count = graph_service.batch_import_entities(kb_id, all_entities)
-            relation_count = graph_service.batch_import_relations(kb_id, all_relations)
+            entity_count = graph_service.batch_import_entities(kb_id, all_entities, run_id=run_id)
+            relation_count = graph_service.batch_import_relations(
+                kb_id,
+                all_relations,
+                run_id=run_id,
+                include_fact_nodes=settings.knowledge_graph.enable_fact_nodes
+            )
+
+            deleted_fact_count = 0
+            if (
+                not settings.knowledge_graph.enable_fact_nodes
+                and settings.knowledge_graph.cleanup_fact_nodes_on_build
+            ):
+                deleted_fact_count = graph_service.cleanup_fact_nodes(kb_id)
             
             logger.info(f"图谱构建完成: kb_id={kb_id}, entities={entity_count}, relations={relation_count}")
             
             return {
                 'status': 'success',
                 'chunks_processed': len(texts_with_ids),
+                'run_id': run_id,
                 'entity_count': entity_count,
-                'relation_count': relation_count
+                'relation_count': relation_count,
+                'deleted_fact_count': deleted_fact_count,
+                'unknown_entity_count': unknown_entity_count,
+                'unknown_relation_count': unknown_relation_count,
+                'normalized_merge_count': normalized_merge_count
             }
             
         except Exception as e:
@@ -555,3 +598,16 @@ class KnowledgeBaseService:
         except Exception as e:
             logger.error(f"删除图谱数据失败: {str(e)}")
             return False
+
+    async def cleanup_graph_facts(self, kb_id: int) -> int:
+        """清理知识库图谱中的Fact节点。"""
+        try:
+            if not settings.knowledge_graph.enabled:
+                return 0
+
+            from app.services.neo4j_graph_service import get_neo4j_graph_service
+            graph_service = get_neo4j_graph_service()
+            return graph_service.cleanup_fact_nodes(kb_id)
+        except Exception as e:
+            logger.error(f"清理Fact节点失败: {str(e)}")
+            return 0

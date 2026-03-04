@@ -5,7 +5,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-基于 **FastAPI + MySQL + ChromaDB + Neo4j** 的企业级 RAG (Retrieval-Augmented Generation) 知识库管理系统，集成知识图谱、Agent智能体、LoRA微调等高级功能。
+基于 **FastAPI + MySQL + ChromaDB + Neo4j** 的企业级 RAG (Retrieval-Augmented Generation) 知识库管理系统，集成知识图谱、Agent智能体等高级功能。
 
 ## ✨ 核心特性
 
@@ -34,13 +34,7 @@
 - ✅ **记忆管理** - 对话历史持久化
 - ✅ **流式响应** - 实时展示推理过程
 
-### 🔧 LoRA微调
-- ✅ **简易训练** - 内置轻量级LoRA训练流程
-- ✅ **LLaMA-Factory集成** - 支持完整训练流程
-- ✅ **实时监控** - WebSocket推送训练进度
-- ✅ **模型管理** - 训练模型版本管理
-
-### 🚀 工程化
+###  工程化
 - ✅ **Docker部署** - 一键启动所有服务（MySQL/Ollama/Neo4j/Nginx）
 - ✅ **模型预装** - 自动下载Ollama和HuggingFace模型
 - ✅ **WebSocket** - 实时进度推送，支持多客户端
@@ -51,70 +45,59 @@
 ```plaintext
 MyRAG/
 ├── Backend/                         # 后端服务
+│   ├── main.py                     # FastAPI 应用入口
+│   ├── config.yaml                 # 唯一 YAML 配置文件
+│   ├── requirements.txt            # Python 依赖
 │   ├── app/
-│   │   ├── api/                    # API路由层（8个模块）
+│   │   ├── api/                    # API 路由层
 │   │   │   ├── knowledge_base.py   # 知识库管理
 │   │   │   ├── assistant.py        # 智能助手
 │   │   │   ├── conversation.py     # 对话管理
 │   │   │   ├── models.py           # 模型管理
-│   │   │   ├── agent.py            # Agent智能体
-│   │   │   ├── lora_training.py    # LoRA训练（完整）
-│   │   │   ├── simple_lora.py      # LoRA训练（简易）
+│   │   │   ├── agent.py            # Agent 智能体
 │   │   │   └── websocket.py        # WebSocket
-│   │   ├── services/               # 业务服务层（18+服务）
-│   │   │   ├── knowledge_base_service.py
-│   │   │   ├── chat_service.py
-│   │   │   ├── embedding_service.py
-│   │   │   ├── vector_store_service.py
-│   │   │   ├── transformers_service.py
-│   │   │   ├── ollama_service.py
-│   │   │   ├── neo4j_graph_service.py
-│   │   │   ├── agent_service.py
-│   │   │   └── ...
-│   │   ├── models/                 # Pydantic数据模型
-│   │   ├── core/                   # 核心配置
-│   │   │   ├── config.py           # 配置管理
-│   │   │   ├── database.py         # 数据库连接池
-│   │   │   └── dependencies.py     # 依赖注入
-│   │   ├── utils/                  # 工具函数
-│   │   │   ├── logger.py           # 日志管理
-│   │   │   ├── file_parser.py      # 文件解析
-│   │   │   └── text_splitter.py    # 文本分割
-│   │   └── websocket/              # WebSocket管理器
-│   ├── scripts/                    # 脚本工具
-│   │   ├── init.sql                # 数据库初始化
-│   │   └── preload-*.py/sh         # 模型预装脚本
-│   ├── config.yaml                 # 主配置文件（153行）
-│   ├── requirements.txt            # Python依赖（62个包）
-│   ├── Dockerfile                  # 容器构建
-│   └── main.py                     # 应用入口
-├── Frontend/                        # 前端界面（纯HTML/CSS/JS）
+│   │   ├── services/               # 业务逻辑层 (18+ 服务)
+│   │   ├── models/                 # Pydantic 数据模型
+│   │   ├── core/                   # 核心模块 (配置/数据库/依赖注入)
+│   │   ├── utils/                  # 工具函数 (日志/解析/分割/验证)
+│   │   └── websocket/              # WebSocket 管理器
+│   └── scripts/                    # 数据库初始化脚本
+│
+├── Frontend/                        # 前端界面 (纯 HTML/CSS/JS)
 │   ├── knowledge-base.html         # 知识库管理
-│   ├── intelligent-assistant.html  # 智能助手
+│   ├── intelligent-assistant.html  # 智能助手管理
 │   ├── chat.html                   # 对话界面
-│   ├── agent.html                  # Agent演示
+│   ├── agent.html                  # Agent 交互
 │   ├── model-management.html       # 模型管理
-│   ├── simple-lora-training.html   # LoRA训练
-│   ├── css/                        # Tailwind CSS
+│   ├── css/                        # 样式文件
 │   └── js/                         # 前端逻辑
-├── Models/                          # 模型文件目录
+│
+├── data/                            # 运行时数据 (统一目录)
+│   ├── knowledge_base/             # 知识库上传文件
+│   ├── vector_db/                  # ChromaDB 向量数据库
+│   ├── logs/                       # 应用日志
+│   └── training_data/              # 训练数据
+│
+├── Models/                          # 模型文件
 │   ├── Embedding/                  # 嵌入模型
-│   ├── LLM/                        # 大语言模型
-│   └── LoRA/                       # LoRA微调模型
-├── KnowledgeBase/                   # 上传文档存储
-├── VectorDB/                        # ChromaDB向量数据库
-├── LLaMA-Factory/                   # LLaMA-Factory集成
-├── LLaMA-Training/                  # 训练输出目录
-├── logs/                            # 日志文件
-├── docs/                            # 项目文档（30+文档）
-│   ├── MyRAG概要设计.md
-│   ├── Docker快速部署指南.md
-│   ├── Agent功能说明.md
-│   ├── 知识图谱自动构建功能.md
-│   └── ...
-├── docker-compose.yml              # Docker编排（5服务）
-├── docker-start.bat                # 启动脚本（Windows）
-├── nginx.conf                      # Nginx反向代理
+│   └── LLM/                        # 大语言模型
+│
+├── deploy/                          # 部署配置
+│   ├── Dockerfile                  # Docker 镜像构建
+│   ├── nginx.conf                  # Nginx 反向代理
+│   ├── docker-start.bat            # Docker 管理脚本
+│   └── docker-daemon-config.json   # Docker 守护进程配置
+│
+├── scripts/                         # 工具脚本
+│   ├── run-tests.bat               # 测试运行脚本
+│   ├── manage_transformers.py      # 模型管理工具
+│   └── preload-*.py/sh             # 模型预下载
+│
+├── test/                            # 测试套件
+├── docs/                            # 项目文档
+├── docker-compose.yml              # Docker 编排 (5 服务)
+├── start.bat                       # 本地启动脚本
+├── .env.example                    # 环境变量模板
 └── README.md                       # 本文档
 ```
 
@@ -175,7 +158,6 @@ MyRAG/
 | **Sentence-Transformers** | 2.7.0+ | 文本嵌入模型 |
 | **Ollama** | Latest | 本地/云端LLM服务 |
 | **LangChain** | 0.1.16 | LLM应用开发框架 |
-| **PEFT** | 0.11.0+ | 参数高效微调（LoRA） |
 | **BitsAndBytes** | 0.48.0+ | 模型量化（INT4/INT8） |
 
 ### 文档处理
@@ -213,17 +195,17 @@ MyRAG/
 
 1. **启动所有服务**
 
-双击运行 `docker-start.bat`，或在命令行中执行：
+双击运行 `deploy/docker-start.bat`，或在命令行中执行：
 
 ```bash
-.\docker-start.bat
+.\deploy\docker-start.bat
 ```
 
 选择 `1. Start all services` 启动所有服务。
 
 2. **预装模型（首次部署必须！）**
 
-服务启动后，再次运行 `docker-start.bat`，选择 `6. Preload models (Ollama + HuggingFace)`。
+服务启动后，再次运行 `deploy/docker-start.bat`，选择 `6. Preload models (Ollama + HuggingFace)`。
 
 这将自动下载：
 - **qwen2.5:1.5b** - 轻量级LLM模型（~1GB）
@@ -413,17 +395,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | GET | `/api/agent/tools` | 获取可用工具列表 |
 | GET | `/api/agent/history/{session_id}` | 获取对话历史 |
 
-#### 6️⃣ LoRA训练 (`/api/lora`, `/api/simple-lora`)
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| POST | `/api/simple-lora/train` | 简易LoRA训练 |
-| GET | `/api/simple-lora/tasks` | 获取训练任务列表 |
-| GET | `/api/simple-lora/tasks/{task_id}` | 获取任务详情 |
-| POST | `/api/lora/start-training` | 启动完整LoRA训练 |
-| GET | `/api/lora/status` | 获取训练状态 |
-
-#### 7️⃣ WebSocket (`/ws`)
+#### 6️⃣ WebSocket (`/ws`)
 
 | 端点 | 说明 |
 |------|------|
@@ -615,7 +587,6 @@ await manager.send_message(
 | [Docker快速部署指南.md](docs/Docker快速部署指南.md) | Docker部署完整教程 |
 | [Agent功能说明.md](docs/Agent功能说明.md) | Agent智能体使用指南 |
 | [知识图谱自动构建功能.md](docs/知识图谱自动构建功能.md) | Neo4j知识图谱构建 |
-| [简易LoRA训练快速开始.md](docs/简易LoRA训练快速开始.md) | LoRA微调教程 |
 | [文本分割功能改进实施指南.md](docs/文本分割功能改进实施指南.md) | 文本分割优化 |
 | [Backend服务层重构方案.md](docs/Backend服务层重构方案.md) | 架构重构说明 |
 
@@ -868,7 +839,6 @@ docker-compose up -d --build backend
 - [Neo4j](https://neo4j.com/) - 图数据库
 - [Ollama](https://ollama.ai/) - 本地LLM运行时
 - [HuggingFace](https://huggingface.co/) - 模型和数据集平台
-- [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) - LLM微调工具
 
 ## 📞 联系方式
 

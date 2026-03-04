@@ -2,7 +2,7 @@
  * 智能助手页面逻辑
  */
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = '';
 
 // 页面状态
 let assistants = [];

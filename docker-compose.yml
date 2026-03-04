@@ -63,19 +63,20 @@ services:
   # FastAPI后端
   backend:
     build:
-      context: ./Backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: deploy/Dockerfile
     container_name: myrag-backend
     restart: on-failure:5
     ports:
       - "8000:8000"
     volumes:
       - ./Backend:/app
-      - ./KnowledgeBase:/app/KnowledgeBase
+      - ./data/knowledge_base:/app/data/knowledge_base
       - ./Models:/app/Models
-      - ./VectorDB:/app/VectorDB
-      - ./logs:/app/logs
+      - ./data/vector_db:/app/data/vector_db
+      - ./data/logs:/app/data/logs
     environment:
+      - PROJECT_ROOT=/app
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=myrag
@@ -101,7 +102,7 @@ services:
       - "80:80"
     volumes:
       - ./Frontend:/usr/share/nginx/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - backend
     networks:

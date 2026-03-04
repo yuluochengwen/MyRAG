@@ -29,6 +29,11 @@
    - 测试递归字符分割器
    - 测试语义分割器（如果配置）
 
+7. **eval_hybrid_retrieval.py** - 混合检索离线评测
+   - 评估 Recall@k / MRR / nDCG@k
+   - 支持 JSONL 格式标注集
+   - 示例数据: `hybrid_eval_dataset.example.jsonl`
+
 ## 运行测试
 
 ### 方式1: 运行所有测试
@@ -51,11 +56,18 @@ E:/Anaconda/envs/MyRAG/python.exe test_06_text_splitting.py
 ```bash
 # 1. 先启动服务
 cd ..
-start-fast.bat
+start.bat
 
 # 2. 在另一个终端运行测试
 cd test
 E:/Anaconda/envs/MyRAG/python.exe test_05_api_endpoints.py
+```
+
+### 方式4: 混合检索离线评测
+```bash
+# 需要先启动后端服务（含数据库/向量库/图数据库）
+cd test
+E:/Anaconda/envs/MyRAG/python.exe eval_hybrid_retrieval.py hybrid_eval_dataset.example.jsonl 5
 ```
 
 ## 注意事项
@@ -63,7 +75,7 @@ E:/Anaconda/envs/MyRAG/python.exe test_05_api_endpoints.py
 1. **测试顺序**: 建议按照编号顺序运行测试
 2. **依赖服务**: 
    - test_01-04, test_06 不需要API服务运行
-   - test_05 需要先启动API服务（运行 start-fast.bat）
+   - test_05 需要先启动API服务（运行 start.bat）
 3. **数据库**: 确保MySQL数据库服务已启动
 4. **环境**: 确保已激活 MyRAG Conda 环境
 
@@ -85,10 +97,10 @@ E:/Anaconda/envs/MyRAG/python.exe test_05_api_endpoints.py
 - 验证数据库 `myrag` 是否已创建
 
 ### 向量存储测试失败
-- 检查 VectorDB 目录是否有写入权限
+- 检查 data/vector_db 目录是否有写入权限
 - 确认 ChromaDB 是否正确安装
 
 ### API端点测试失败
-- 确保已运行 `start-fast.bat` 启动服务
+- 确保已运行 `start.bat` 启动服务
 - 检查端口 8000 是否被占用
 - 查看服务日志是否有错误信息

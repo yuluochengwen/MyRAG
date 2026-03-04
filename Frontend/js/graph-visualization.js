@@ -69,12 +69,15 @@ function extractGraphDataFromResponse(sources) {
         if (source.source === 'graph_direct' && metadata.entity) {
             graphSourceCount++;
             const nodeId = metadata.entity;
+            const labels = Array.isArray(metadata.labels) ? metadata.labels : [];
+            const primaryType = metadata.type || labels[0] || 'Unknown';
             
             if (!nodes.has(nodeId)) {
                 nodes.set(nodeId, {
                     id: nodeId,
                     name: metadata.entity,
-                    type: metadata.type || 'Unknown',
+                    type: primaryType,
+                    labels: labels,
                     sourceType: 'direct',
                     content: source.content
                 });
@@ -99,10 +102,12 @@ function extractGraphDataFromResponse(sources) {
             
             // 添加目标节点
             if (!nodes.has(targetId)) {
+                const targetLabels = Array.isArray(metadata.target_labels) ? metadata.target_labels : [];
                 nodes.set(targetId, {
                     id: targetId,
                     name: targetId,
-                    type: metadata.target_type || 'Entity',
+                    type: metadata.target_type || targetLabels[0] || 'Entity',
+                    labels: targetLabels,
                     sourceType: 'related'
                 });
             }
@@ -350,4 +355,58 @@ function autoShowGraphPanelIfNeeded(sources) {
             }
         }
     }
+}
+
+/**
+ * 渲染图检索诊断信息
+ */
+function renderGraphDiagnostics(diagnostics) {
+    const container = document.getElementById('graphDiagnostics');
+    if (!container) return;
+
+    if (!diagnostics) {
+        container.innerHTML = '<p class="text-gray-500 text-xs">暂无图检索诊断信息</p>';
+        return;
+    }
+
+    const kbDiagnostics = Array.isArray(diagnostics.kb_diagnostics) ? diagnostics.kb_diagnostics : [];
+    if (kbDiagnostics.length === 0) {
+        container.innerHTML = '<p class="text-gray-500 text-xs">当前检索未返回诊断详情</p>';
+        return;
+    }
+
+    const extracted = [];
+    const matched = [];
+    const unmatched = [];
+    const stages = {};
+
+    kbDiagnostics.forEach(item => {
+        (item.extracted_entities || []).forEach(entity => {
+            if (entity && !extracted.includes(entity)) extracted.push(entity);
+        });
+        (item.matched_entities || []).forEach(entity => {
+            if (entity && !matched.includes(entity)) matched.push(entity);
+        });
+        (item.unmatched_entities || []).forEach(entity => {
+            if (entity && !unmatched.includes(entity)) unmatched.push(entity);
+        });
+        (item.match_details || []).forEach(detail => {
+            const stage = detail.match_stage || 'none';
+            stages[stage] = (stages[stage] || 0) + 1;
+        });
+    });
+
+    const stageText = Object.keys(stages).length > 0
+        ? Object.entries(stages).map(([k, v]) => `${k}:${v}`).join(' / ')
+        : '无';
+
+    container.innerHTML = `
+        <div class="bg-emerald-50 border border-emerald-100 rounded-lg p-3 space-y-2">
+            <div class="text-xs font-semibold text-emerald-700">图检索诊断</div>
+            <div class="text-xs text-gray-700">抽取实体: ${extracted.length > 0 ? extracted.join('、') : '无'}</div>
+            <div class="text-xs text-green-700">命中实体: ${matched.length > 0 ? matched.join('、') : '无'}</div>
+            <div class="text-xs text-amber-700">未命中实体: ${unmatched.length > 0 ? unmatched.join('、') : '无'}</div>
+            <div class="text-xs text-gray-600">命中阶段分布: ${stageText}</div>
+        </div>
+    `;
 }

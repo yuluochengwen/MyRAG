@@ -2,7 +2,7 @@
 import os
 import yaml
 from pathlib import Path
-from typing import List
+from typing import List, Dict
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
@@ -11,7 +11,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 项目根目录 (MyRAG/)
-BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
+# 本地开发: config.py 上4层 → MyRAG/
+# Docker 容器: 通过 PROJECT_ROOT 环境变量指定
+BASE_DIR = Path(os.getenv("PROJECT_ROOT", str(Path(__file__).resolve().parent.parent.parent.parent)))
 
 
 class DatabaseConfig(BaseModel):
@@ -42,8 +44,8 @@ class FileConfig(BaseModel):
     """文件配置"""
     max_size_mb: int = 100
     total_max_size_mb: int = 500
-    allowed_extensions: List[str] = [".txt", ".md", ".pdf", ".docx", ".html"]
-    upload_dir: str = str(BASE_DIR / "KnowledgeBase")
+    allowed_extensions: List[str] = [".txt", ".md", ".pdf", ".docx", ".html", ".json"]
+    upload_dir: str = str(BASE_DIR / "data" / "knowledge_base")
 
 
 class SemanticSplitConfig(BaseModel):
@@ -67,14 +69,14 @@ class TextProcessingConfig(BaseModel):
 class VectorDBConfig(BaseModel):
     """向量数据库配置"""
     type: str = "chroma"
-    persist_dir: str = str(BASE_DIR / "VectorDB")
+    persist_dir: str = str(BASE_DIR / "data" / "vector_db")
     collection_name_prefix: str = "kb_"
 
 
 class EmbeddingConfig(BaseModel):
     """嵌入模型配置"""
     provider: str = "transformers"  # 默认嵌入提供方
-    default_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    default_model: str = "BERT-Base"
     model_dir: str = str(BASE_DIR / "Models" / "Embedding")
     batch_size: int = 32
     max_length: int = 512
@@ -91,7 +93,7 @@ class EmbeddingConfig(BaseModel):
 class LoggingConfig(BaseModel):
     """日志配置"""
     level: str = "INFO"
-    file: str = str(BASE_DIR / "logs" / "app.log")
+    file: str = str(BASE_DIR / "data" / "logs" / "app.log")
     max_bytes: int = 10485760
     backup_count: int = 5
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -106,14 +108,19 @@ class WebSocketConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM配置"""
     default_provider: str = "transformers"  # transformers, openai, azure
-    default_model: str = "DeepSeek-OCR-3B"  # 本地模型名称(3B更适合6GB显存)
+    default_model: str = "Qwen2.5-3B-Instruct"  # 默认模型（与config.yaml同步）
     local_models_dir: str = str(BASE_DIR / "Models")  # 本地模型目录
     transformers_quantization: str = "int4"  # 量化方式: int4, int8, fp16
     transformers_max_memory: float = 5.5  # 最大显存使用(GB), RTX 3060 6GB建议5.5
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = "https://api.openai.com/v1"
-    temperature: float = 0.7
-    max_tokens: int = 512  # 降低默认值，CPU offload时生成速度慢
+    temperature: float = 0.5
+    max_tokens: int = 256  # 与config.yaml同步
+    ollama: Dict[str, str | int] = {
+        "base_url": "http://localhost:11434",
+        "timeout": 120,
+        "default_model": "deepseek-v3.1:671b-cloud"
+    }
 
 
 class Neo4jConfig(BaseModel):
@@ -132,10 +139,27 @@ class EntityExtractionConfig(BaseModel):
     provider: str = "ollama"
     ollama_model: str = "qwen2.5:7b"
     temperature: float = 0.1
-    timeout: int = 60
+    timeout: int = 300
+    max_tokens: int = 1024
     max_retries: int = 3
     batch_size: int = 5
     min_text_length: int = 50
+    schema_version: str = "v2"
+    enable_multilabel: bool = True
+    keep_legacy_type_field: bool = True
+    enable_unknown_bucket: bool = True
+    unknown_entity_type: str = "Unclassified"
+    unknown_relation_type: str = "related_to"
+    llm_normalization_priority: bool = True
+    alias_map: Dict[str, str] = {}
+    valid_entity_types: List[str] = [
+        "Person", "Organization", "Location", "Product", "Concept", "Event", "Date",
+        "主体", "动作/行为", "属性/特征", "关联对象", "约束/规则", "Unclassified"
+    ]
+    valid_relation_types: List[str] = [
+        "隶属/组成", "执行/触发", "描述/修饰", "约束/限制", "时空/因果",
+        "works_at", "located_in", "part_of", "founded_by", "related_to"
+    ]
 
 
 class KnowledgeGraphConfig(BaseModel):
@@ -146,6 +170,8 @@ class KnowledgeGraphConfig(BaseModel):
     max_hops: int = 2
     min_entity_length: int = 2
     enable_by_default: bool = False
+    enable_fact_nodes: bool = False
+    cleanup_fact_nodes_on_build: bool = True
     entity_types: List[str] = [
         "Person", "Organization", "Location", 
         "Product", "Concept", "Event", "Date"
@@ -157,6 +183,24 @@ class HybridRetrievalConfig(BaseModel):
     vector_weight: float = 0.6
     graph_weight: float = 0.4
     enable_by_default: bool = False
+    enable_query_normalization: bool = True
+    enable_compound_entity_split: bool = True
+    graph_min_results: int = 1
+    diagnostics_enabled: bool = True
+    max_fallback_candidates: int = 8
+    enable_keyword_search: bool = True
+    keyword_weight: float = 0.5
+    enable_rrf_fusion: bool = True
+    rrf_k: int = 60
+    rrf_window_size: int = 50
+    enable_light_rerank: bool = True
+    rerank_alpha: float = 0.7
+    query_stopwords: List[str] = [
+        "的", "了", "和", "与", "及", "由", "是", "是什么", "怎么", "如何", "哪些", "哪几", "吗", "呢", "啊", "呀"
+    ]
+    compound_split_tokens: List[str] = [
+        "的", "与", "和", "及", "由", "、", "/", "-", "_"
+    ]
 
 
 class Settings(BaseSettings):
@@ -185,9 +229,13 @@ def load_config() -> Settings:
     加载配置
     
     从 YAML 配置文件合并配置项到默认设置
-    配置文件路径: MyRAG/Backend/config.yaml
+    本地开发: MyRAG/Backend/config.yaml
+    Docker: /app/config.yaml (Backend内容直接在WORKDIR)
     """
     config_file = BASE_DIR / "Backend" / "config.yaml"
+    if not config_file.exists():
+        # Docker 环境: Backend 内容直接在工作目录
+        config_file = Path(__file__).resolve().parent.parent.parent / "config.yaml"
     
     if not config_file.exists():
         return Settings()
@@ -216,14 +264,20 @@ def load_config() -> Settings:
                                     setattr(nested_obj, nested_k, nested_v)
                             continue
                     
+                    # 兼容旧键名：vector_db.persist_directory -> vector_db.persist_dir
+                    target_key = k
+                    if key == 'vector_db' and k == 'persist_directory':
+                        target_key = 'persist_dir'
+
                     # 处理路径配置:将相对路径转换为绝对路径
                     # 支持两种格式: "Models" 或 "../Models" (都相对于BASE_DIR)
-                    if k in ['local_models_dir', 'upload_dir', 'persist_directory', 'model_dir', 'file']:
+                    if target_key in ['local_models_dir', 'upload_dir', 'persist_dir', 'model_dir', 'file', 'log_dir']:
                         if isinstance(v, str) and not Path(v).is_absolute():
                             # 移除可能的"../"前缀,统一处理为相对于BASE_DIR
                             clean_path = v.replace('../', '')
                             v = str((BASE_DIR / clean_path).resolve())
-                    setattr(config_obj, k, v)
+                    if hasattr(config_obj, target_key):
+                        setattr(config_obj, target_key, v)
     
     return settings
 
