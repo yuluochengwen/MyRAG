@@ -244,40 +244,18 @@ class ModelScanner:
         
         return models
     
-    def get_remote_llm_models(self) -> List[Dict[str, str]]:
-        """
-        获取可用的远程LLM模型列表(预设)
-        
-        Returns:
-            远程模型列表
-        """
-        return [
-            {"name": "gpt-4", "provider": "openai", "type": "llm"},
-            {"name": "gpt-3.5-turbo", "provider": "openai", "type": "llm"},
-            {"name": "gpt-4-turbo-preview", "provider": "openai", "type": "llm"},
-        ]
-    
     def get_all_llm_models(self) -> Dict[str, List[Dict]]:
         """
-        获取所有LLM模型(本地+远程+ollama)
+        获取所有LLM模型(仅本地)
         
         Returns:
-            {"local": [...], "remote": [...], "ollama": [...]}
+            {"local": [...], "remote": []}
         """
         result = {
             "local": self.scan_llm_models(),
-            "remote": self.get_remote_llm_models()
+            "remote": []
         }
-        
-        # 获取Ollama LLM模型
-        try:
-            from app.services.ollama_llm_service import get_ollama_llm_service
-            ollama_service = get_ollama_llm_service()
-            result["ollama"] = ollama_service.list_available_models()
-        except Exception as e:
-            print(f"Warning: Failed to get Ollama LLM models: {e}")
-            result["ollama"] = []
-        
+
         return result
     
     def get_all_embedding_models(self) -> List[Dict]:

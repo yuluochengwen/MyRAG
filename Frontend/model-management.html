@@ -13,6 +13,7 @@
   
   <!-- 引入公共脚本 -->
   <script src="js/common.js" defer></script>
+  <script src="js/websocket.js" defer></script>
   <!-- 引入模型管理脚本 -->
   <script src="js/model-management.js" defer></script>
   
@@ -93,8 +94,8 @@
   <main class="flex-grow container mx-auto px-4 py-6">
     <div class="flex justify-between items-center mb-6">
       <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold">模型管理</h1>
-      <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom shadow-md hover:shadow-lg">
-        <i class="fa fa-plus mr-2"></i> 导入模型
+      <button id="add-model-btn" class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom shadow-md hover:shadow-lg">
+        <i class="fa fa-plus mr-2"></i> 添加模型
       </button>
     </div>
     
@@ -103,6 +104,7 @@
       <nav class="flex space-x-8">
         <button class="model-tab-btn py-4 px-1 border-b-2 border-primary text-primary font-medium" data-tab="embedding-models">嵌入模型</button>
         <button class="model-tab-btn py-4 px-1 border-b-2 border-transparent text-gray-500 hover:text-primary hover:border-primary/30 font-medium" data-tab="llm-models">LLM模型</button>
+        <button class="model-tab-btn py-4 px-1 border-b-2 border-transparent text-gray-500 hover:text-primary hover:border-primary/30 font-medium" data-tab="lora-models">LoRA 模型</button>
       </nav>
     </div>
     
@@ -225,7 +227,7 @@
         </div>
         
         <div class="px-6 py-4 border-t border-gray-100 flex justify-between items-center">
-          <div class="text-sm text-gray-500">显示 1 到 3 项，共 3 项</div>
+          <div class="text-sm text-gray-500 pagination-text">显示 1 到 3 项，共 3 项</div>
           <div class="flex space-x-2">
             <button class="px-3 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>上一页</button>
             <button class="px-3 py-1 rounded border border-primary bg-primary text-white">1</button>
@@ -282,6 +284,25 @@
             </div>
             <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">导入</button>
           </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- LoRA模型管理 -->
+    <div id="lora-models-tab" class="model-tab-content hidden">
+      <div class="bg-white rounded-xl card-shadow overflow-hidden mb-6">
+        <div class="p-6 border-b border-gray-100">
+          <div class="flex justify-between items-center">
+            <h2 class="text-xl font-bold">LoRA 模型</h2>
+            <div class="relative">
+              <input type="text" placeholder="搜索LoRA模型..." class="pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary w-64 transition-custom">
+              <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+            </div>
+          </div>
+        </div>
+        
+        <div id="lora-models-list" class="p-6">
+          <!-- LoRA模型卡片将在这里动态加载 -->
         </div>
       </div>
     </div>
@@ -405,7 +426,7 @@
         </div>
         
         <div class="px-6 py-4 border-t border-gray-100 flex justify-between items-center">
-          <div class="text-sm text-gray-500">显示 1 到 3 项，共 3 项</div>
+          <div class="text-sm text-gray-500 pagination-text">显示 1 到 3 项，共 3 项</div>
           <div class="flex space-x-2">
             <button class="px-3 py-1 rounded border border-gray-300 text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>上一页</button>
             <button class="px-3 py-1 rounded border border-primary bg-primary text-white">1</button>

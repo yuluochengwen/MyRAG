@@ -169,11 +169,12 @@ class ChatService:
         top_k: int = 5,
         llm_model: Optional[str] = None,
         llm_provider: str = "local",
+        lora_model_id: Optional[int] = None,
         temperature: float = 0.7,
         use_hybrid_retrieval: bool = False
     ) -> Dict[str, Any]:
         """
-        智能助手对话（支持多知识库 + 上下文记忆 + 混合检索）
+        智能助手对话（支持多知识库 + 上下文记忆 + 混合检索 + LoRA推理）
         
         Args:
             kb_ids: 知识库ID列表（None表示纯对话模式）
@@ -183,6 +184,7 @@ class ChatService:
             top_k: 检索文档数量
             llm_model: LLM模型名称
             llm_provider: LLM提供方
+            lora_model_id: LoRA模型ID（可选）
             temperature: 生成温度
             use_hybrid_retrieval: 是否使用混合检索（向量+图谱）
             
@@ -246,7 +248,7 @@ class ChatService:
             if search_results:
                 await self._release_embedding_memory()
             
-            # 5. 调用LLM生成回答（传递历史消息）
+            # 5. 调用LLM生成回答（传递历史消息和LoRA模型ID）
             answer = await self._generate_answer(
                 query=query,
                 context=context,
@@ -254,6 +256,7 @@ class ChatService:
                 system_prompt=system_prompt,
                 llm_model=llm_model,
                 llm_provider=llm_provider,
+                lora_model_id=lora_model_id,
                 temperature=temperature
             )
             
@@ -318,10 +321,11 @@ class ChatService:
         system_prompt: Optional[str],
         llm_model: Optional[str],
         llm_provider: str,
+        lora_model_id: Optional[int],
         temperature: float
     ) -> str:
         """
-        调用LLM生成回答（支持上下文记忆）
+        调用LLM生成回答（支持上下文记忆和LoRA推理）
         
         Args:
             query: 用户问题
@@ -330,6 +334,7 @@ class ChatService:
             system_prompt: 系统提示词
             llm_model: LLM模型名称
             llm_provider: LLM提供方
+            lora_model_id: LoRA模型ID（可选）
             temperature: 生成温度
             
         Returns:
@@ -340,6 +345,25 @@ class ChatService:
         
         # 构建完整消息列表
         messages = self._build_messages(user_message, history_messages, system_prompt)
+        
+        # 如果指定了LoRA模型，使用LoRA推理服务
+        if lora_model_id and llm_provider in ['local', 'transformers']:
+            try:
+                from app.services.lora_inference_service import get_lora_inference_service
+                lora_service = get_lora_inference_service()
+                
+                logger.info(f"使用LoRA推理: lora_model_id={lora_model_id}, 历史消息: {len(history_messages) if history_messages else 0}条")
+                
+                # 使用LoRA推理服务
+                return await lora_service.generate(
+                    lora_model_id=lora_model_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_length=2048
+                )
+            except Exception as e:
+                logger.error(f"LoRA推理失败，回退到基座模型: {str(e)}")
+                # 回退到基座模型推理
         
         # 根据provider调用不同的LLM
         try:
@@ -394,11 +418,12 @@ class ChatService:
         top_k: int = 5,
         llm_model: Optional[str] = None,
         llm_provider: str = "local",
+        lora_model_id: Optional[int] = None,
         temperature: float = 0.7,
         use_hybrid_retrieval: bool = False
     ):
         """
-        智能助手流式对话（支持上下文记忆）
+        智能助手流式对话（支持上下文记忆和LoRA推理）
         
         Args:
             kb_ids: 知识库ID列表（None表示纯对话模式）
@@ -408,6 +433,7 @@ class ChatService:
             top_k: 检索文档数量
             llm_model: LLM模型名称
             llm_provider: LLM提供方
+            lora_model_id: LoRA模型ID（可选）
             temperature: 生成温度
             use_hybrid_retrieval: 是否使用混合检索（向量+图谱）
             
@@ -477,7 +503,7 @@ class ChatService:
             if search_results:
                 await self._release_embedding_memory()
             
-            # 5. 流式调用LLM生成回答（传递历史消息）
+            # 5. 流式调用LLM生成回答（传递历史消息和LoRA模型ID）
             async for text_chunk in self._generate_answer_stream(
                 query=query,
                 context=context,
@@ -485,6 +511,7 @@ class ChatService:
                 system_prompt=system_prompt,
                 llm_model=llm_model,
                 llm_provider=llm_provider,
+                lora_model_id=lora_model_id,
                 temperature=temperature
             ):
                 yield {
@@ -513,10 +540,11 @@ class ChatService:
         system_prompt: Optional[str],
         llm_model: Optional[str],
         llm_provider: str,
+        lora_model_id: Optional[int],
         temperature: float
     ) -> AsyncGenerator[str, None]:
         """
-        流式调用LLM生成回答（支持上下文记忆）
+        流式调用LLM生成回答（支持上下文记忆和LoRA推理）
         
         Yields:
             str: 生成的文本片段
@@ -526,6 +554,27 @@ class ChatService:
         
         # 构建完整消息列表（复用公共方法）
         messages = self._build_messages(user_message, history_messages, system_prompt)
+        
+        # 如果指定了LoRA模型，使用LoRA推理服务（流式暂不支持，回退到非流式）
+        if lora_model_id and llm_provider in ['local', 'transformers']:
+            try:
+                from app.services.lora_inference_service import get_lora_inference_service
+                lora_service = get_lora_inference_service()
+                
+                logger.info(f"使用LoRA推理（流式暂不支持，使用非流式）: lora_model_id={lora_model_id}")
+                
+                # LoRA推理服务暂不支持流式，一次性返回完整结果
+                result = await lora_service.generate(
+                    lora_model_id=lora_model_id,
+                    messages=messages,
+                    temperature=temperature,
+                    max_length=2048
+                )
+                yield result
+                return
+            except Exception as e:
+                logger.error(f"LoRA推理失败，回退到基座模型: {str(e)}")
+                # 回退到基座模型推理
         
         try:
             if llm_provider in ['local', 'transformers']:

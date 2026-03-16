@@ -190,6 +190,123 @@ class ConnectionManager:
     def is_connected(self, client_id: str) -> bool:
         """检查客户端是否在线"""
         return client_id in self.active_connections and len(self.active_connections[client_id]) > 0
+    
+    # ============ LoRA 训练相关方法 ============
+    
+    async def send_training_progress(
+        self,
+        client_id: str,
+        job_id: int,
+        progress: float,
+        epoch: int,
+        step: int,
+        loss: float = None,
+        message: str = None,
+        eta: int = None
+    ):
+        """
+        发送训练进度
+        
+        Args:
+            client_id: 客户端ID
+            job_id: 训练任务ID
+            progress: 进度（0-100）
+            epoch: 当前 epoch
+            step: 当前 step
+            loss: Loss 值
+            message: 进度消息
+            eta: 预计剩余时间（秒）
+        """
+        data = {
+            'type': 'progress',
+            'job_id': job_id,
+            'data': {
+                'progress': progress,
+                'epoch': epoch,
+                'step': step,
+                'loss': loss,
+                'message': message,
+                'eta': eta
+            }
+        }
+        
+        await self.send_message(client_id, data)
+        logger.debug(f"发送训练进度: client_id={client_id}, job_id={job_id}, progress={progress}%")
+    
+    async def send_training_log(
+        self,
+        client_id: str,
+        job_id: int,
+        log_message: str
+    ):
+        """
+        发送训练日志
+        
+        Args:
+            client_id: 客户端ID
+            job_id: 训练任务ID
+            log_message: 日志消息
+        """
+        data = {
+            'type': 'log',
+            'job_id': job_id,
+            'data': {
+                'message': log_message
+            }
+        }
+        
+        await self.send_message(client_id, data)
+    
+    async def send_training_complete(
+        self,
+        client_id: str,
+        job_id: int,
+        lora_model_id: int = None
+    ):
+        """
+        发送训练完成消息
+        
+        Args:
+            client_id: 客户端ID
+            job_id: 训练任务ID
+            lora_model_id: LoRA 模型ID
+        """
+        data = {
+            'type': 'complete',
+            'job_id': job_id,
+            'data': {
+                'message': '训练完成',
+                'lora_model_id': lora_model_id
+            }
+        }
+        
+        await self.send_message(client_id, data)
+        logger.info(f"发送训练完成: client_id={client_id}, job_id={job_id}")
+    
+    async def send_training_error(
+        self,
+        client_id: str,
+        job_id: int,
+        error_message: str
+    ):
+        """
+        发送训练错误消息
+        
+        Args:
+            client_id: 客户端ID
+            job_id: 训练任务ID
+            error_message: 错误消息
+        """
+        data = {
+            'type': 'error',
+            'job_id': job_id,
+            'data': {
+                'message': error_message
+            }
+        }
+        
+        await self.send_message(client_id, data)
+        logger.error(f"发送训练错误: client_id={client_id}, job_id={job_id}, error={error_message}")
 
 
 # 全局WebSocket管理器

@@ -20,6 +20,8 @@ from app.models.schemas import (
 
 from app.models.knowledge_base import KnowledgeBase
 from app.models.file import File
+from app.models.lora_model import LoRAModel
+from app.models.lora_training_job import LoRATrainingJob
 
 __all__ = [
     # Schemas
@@ -42,4 +44,6 @@ __all__ = [
     # Models
     'KnowledgeBase',
     'File',
+    'LoRAModel',
+    'LoRATrainingJob',
 ]

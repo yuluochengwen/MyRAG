@@ -121,13 +121,31 @@ async def create_assistant(
                     status_code=404,
                     detail=f"Ollama模型 '{assistant_data.llm_model}' 不存在或未安装"
                 )
-
         
-        # 3. 插入数据库
+        # 3. 验证LoRA模型（如果指定）
+        if assistant_data.lora_model_id:
+            sql = "SELECT id, name, base_model_name FROM lora_models WHERE id = %s"
+            lora_results = await db.execute_query(sql, (assistant_data.lora_model_id,))
+            
+            if not lora_results:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"LoRA模型ID {assistant_data.lora_model_id} 不存在"
+                )
+            
+            lora_model = lora_results[0]
+            # 验证LoRA与基座模型匹配
+            if lora_model['base_model_name'] != assistant_data.llm_model:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LoRA模型 '{lora_model['name']}' 的基座模型是 '{lora_model['base_model_name']}'，与选择的LLM模型 '{assistant_data.llm_model}' 不匹配"
+                )
+        
+        # 4. 插入数据库
         sql = """
             INSERT INTO assistants 
-            (name, description, kb_ids, embedding_model, llm_model, llm_provider, system_prompt, color_theme, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'active')
+            (name, description, kb_ids, embedding_model, llm_model, llm_provider, lora_model_id, system_prompt, color_theme, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
         """
         assistant_id = await db.execute_insert(sql, (
             assistant_data.name,
@@ -136,11 +154,12 @@ async def create_assistant(
             assistant_data.embedding_model,
             assistant_data.llm_model,
             assistant_data.llm_provider,
+            assistant_data.lora_model_id,
             assistant_data.system_prompt,
             assistant_data.color_theme
         ))
         
-        # 4. 查询创建的记录
+        # 5. 查询创建的记录
         sql = "SELECT * FROM assistants WHERE id = %s"
         result = await db.execute_query(sql, (assistant_id,))
         assistant = result[0]
@@ -154,6 +173,7 @@ async def create_assistant(
             embedding_model=assistant['embedding_model'],
             llm_model=assistant['llm_model'],
             llm_provider=assistant['llm_provider'],
+            lora_model_id=assistant.get('lora_model_id'),
             system_prompt=assistant['system_prompt'],
             color_theme=assistant['color_theme'],
             status=assistant['status'],
@@ -173,7 +193,7 @@ async def get_assistant(assistant_id: int, db: DatabaseManager = Depends(get_dat
     try:
         sql = """
             SELECT id, name, description, kb_ids, embedding_model, llm_model, llm_provider, 
-                   system_prompt, color_theme, status, conversation_count, total_messages, 
+                   lora_model_id, system_prompt, color_theme, status, conversation_count, total_messages, 
                    last_conversation_at, created_at, updated_at 
             FROM assistants 
             WHERE id = %s
@@ -206,6 +226,7 @@ async def get_assistant(assistant_id: int, db: DatabaseManager = Depends(get_dat
             embedding_model=assistant['embedding_model'],
             llm_model=assistant['llm_model'],
             llm_provider=assistant['llm_provider'],
+            lora_model_id=assistant.get('lora_model_id'),
             system_prompt=assistant['system_prompt'],
             color_theme=assistant['color_theme'],
             status=assistant['status'],
@@ -228,7 +249,7 @@ async def list_assistants(db: DatabaseManager = Depends(get_database)):
     try:
         sql = """
             SELECT id, name, description, kb_ids, embedding_model, llm_model, llm_provider, 
-                   system_prompt, color_theme, status, conversation_count, total_messages, 
+                   lora_model_id, system_prompt, color_theme, status, conversation_count, total_messages, 
                    last_conversation_at, created_at, updated_at 
             FROM assistants 
             WHERE status = 'active' 
@@ -259,6 +280,7 @@ async def list_assistants(db: DatabaseManager = Depends(get_database)):
                 embedding_model=assistant['embedding_model'],
                 llm_model=assistant['llm_model'],
                 llm_provider=assistant['llm_provider'],
+                lora_model_id=assistant.get('lora_model_id'),
                 system_prompt=assistant['system_prompt'],
                 color_theme=assistant['color_theme'],
                 status=assistant['status'],
@@ -341,7 +363,26 @@ async def update_assistant(
                     detail=f"Ollama模型 '{assistant_data.llm_model}' 不存在或未安装"
                 )
         
-        # 4. 更新数据库
+        # 4. 验证LoRA模型（如果指定）
+        if assistant_data.lora_model_id:
+            sql = "SELECT id, name, base_model_name FROM lora_models WHERE id = %s"
+            lora_results = await db.execute_query(sql, (assistant_data.lora_model_id,))
+            
+            if not lora_results:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"LoRA模型ID {assistant_data.lora_model_id} 不存在"
+                )
+            
+            lora_model = lora_results[0]
+            # 验证LoRA与基座模型匹配
+            if lora_model['base_model_name'] != assistant_data.llm_model:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"LoRA模型 '{lora_model['name']}' 的基座模型是 '{lora_model['base_model_name']}'，与选择的LLM模型 '{assistant_data.llm_model}' 不匹配"
+                )
+        
+        # 5. 更新数据库
         sql = """
             UPDATE assistants 
             SET name = %s, 
@@ -350,6 +391,7 @@ async def update_assistant(
                 embedding_model = %s, 
                 llm_model = %s, 
                 llm_provider = %s, 
+                lora_model_id = %s,
                 system_prompt = %s, 
                 color_theme = %s,
                 updated_at = CURRENT_TIMESTAMP
@@ -365,13 +407,14 @@ async def update_assistant(
                 assistant_data.embedding_model,
                 assistant_data.llm_model,
                 assistant_data.llm_provider,
+                assistant_data.lora_model_id,
                 assistant_data.system_prompt,
                 assistant_data.color_theme,
                 assistant_id
             )
         )
         
-        # 5. 返回更新后的助手信息
+        # 6. 返回更新后的助手信息
         return await get_assistant(assistant_id, db)
         
     except HTTPException:

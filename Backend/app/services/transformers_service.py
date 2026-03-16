@@ -1,6 +1,6 @@
 """
 Transformers本地推理服务
-支持动态模型加载、流式输出、量化加速、LoRA适配器
+支持动态模型加载、流式输出、量化加速
 适配RTX 3060 6GB显存
 """
 import os
@@ -16,7 +16,6 @@ from transformers import (
     BitsAndBytesConfig,
     TextIteratorStreamer
 )
-from peft import PeftModel
 from threading import Thread
 from app.core.config import settings
 from app.utils.logger import logger
@@ -29,10 +28,8 @@ class TransformersService:
         self.current_model = None
         self.current_tokenizer = None
         self.current_model_name = None
-        self.current_lora_path = None  # 当前加载的 LoRA 路径
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.models_dir = Path(settings.llm.local_models_dir) / "LLM"
-        self.lora_dir = Path(settings.llm.local_models_dir) / "LoRA"
         
         # 6GB显存优化配置
         self.quantization_config = BitsAndBytesConfig(
@@ -277,126 +274,6 @@ class TransformersService:
             self.current_model_name = None
             return False
     
-    async def load_model_with_lora(
-        self, 
-        base_model: str, 
-        lora_path: str,
-        quantize: bool = True
-    ) -> bool:
-        """
-        加载基座模型并应用 LoRA 适配器
-        
-        Args:
-            base_model: 基座模型名称或路径
-            lora_path: LoRA 适配器路径
-            quantize: 是否启用INT4量化
-        
-        Returns:
-            bool: 加载成功返回True
-        """
-        try:
-            # 解析基座模型路径
-            if '\\' in base_model or '/' in base_model:
-                base_model_path = Path(base_model)
-            else:
-                base_model_path = self.models_dir / base_model
-            
-            if not base_model_path.exists():
-                raise FileNotFoundError(f"基座模型不存在: {base_model_path}")
-            
-            # 验证 LoRA 路径
-            lora_path_obj = Path(lora_path)
-            if not lora_path_obj.exists():
-                raise FileNotFoundError(f"LoRA 适配器不存在: {lora_path}")
-            
-            adapter_config = lora_path_obj / "adapter_config.json"
-            if not adapter_config.exists():
-                raise FileNotFoundError(f"adapter_config.json 不存在: {adapter_config}")
-            
-            logger.info(f"开始加载 LoRA 模型")
-            logger.info(f"基座模型: {base_model_path}")
-            logger.info(f"LoRA 适配器: {lora_path}")
-            logger.info(f"量化模式: {'INT4' if quantize else '无'}")
-            
-            # 如果已经加载了相同配置,跳过
-            if (self.current_model_name == str(base_model_path) and 
-                self.current_lora_path == lora_path):
-                logger.info("LoRA 模型已加载,跳过重复加载")
-                return True
-            
-            # 清理之前的模型
-            if self.current_model is not None:
-                logger.info(f"卸载旧模型: {self.current_model_name}")
-                del self.current_model
-                del self.current_tokenizer
-                torch.cuda.empty_cache()
-            
-            # 1. 加载 tokenizer
-            logger.info("加载 Tokenizer...")
-            try:
-                self.current_tokenizer = AutoTokenizer.from_pretrained(
-                    str(base_model_path),
-                    trust_remote_code=True,
-                    use_fast=True
-                )
-            except Exception as e:
-                logger.warning(f"Fast tokenizer 加载失败: {e}, 尝试 slow tokenizer")
-                self.current_tokenizer = AutoTokenizer.from_pretrained(
-                    str(base_model_path),
-                    trust_remote_code=True,
-                    use_fast=False
-                )
-            
-            # 2. 加载基座模型
-            logger.info("加载基座模型权重...")
-            load_kwargs = {
-                "pretrained_model_name_or_path": str(base_model_path),
-                "trust_remote_code": True,
-                "dtype": torch.float16,
-                "low_cpu_mem_usage": True,
-            }
-            
-            if quantize and self.device == "cuda":
-                load_kwargs["quantization_config"] = self.quantization_config
-                load_kwargs["device_map"] = "auto"
-                load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
-            elif self.device == "cuda":
-                load_kwargs["device_map"] = "auto"
-                load_kwargs["max_memory"] = {0: "5.5GiB", "cpu": "0GiB"}
-            
-            base_model_obj = AutoModelForCausalLM.from_pretrained(**load_kwargs)
-            
-            # 3. 加载 LoRA 适配器
-            logger.info("加载 LoRA 适配器...")
-            self.current_model = PeftModel.from_pretrained(
-                base_model_obj,
-                lora_path,
-                dtype=torch.float16
-            )
-            
-            # 设置为评估模式
-            self.current_model.eval()
-            
-            self.current_model_name = str(base_model_path)
-            self.current_lora_path = lora_path
-            
-            # 显示显存使用
-            if self.device == "cuda":
-                allocated = torch.cuda.memory_allocated(0) / 1024**3
-                reserved = torch.cuda.memory_reserved(0) / 1024**3
-                logger.info(f"显存使用: {allocated:.2f}GB 已分配, {reserved:.2f}GB 已保留")
-            
-            logger.info("✅ LoRA 模型加载成功")
-            return True
-            
-        except Exception as e:
-            logger.error(f"加载 LoRA 模型失败: {e}", exc_info=True)
-            self.current_model = None
-            self.current_tokenizer = None
-            self.current_model_name = None
-            self.current_lora_path = None
-            return False
-    
     async def chat(
         self,
         model: str,
@@ -426,17 +303,10 @@ class TransformersService:
         # 非流式生成
         try:
             # 确保模型已加载
-            # 注意：如果已经加载了 LoRA 模型，不要重新加载基座模型
             if self.current_model_name != model:
-                # 检查是否已加载同一基座模型的 LoRA
-                if self.current_lora_path is None:
-                    # 没有 LoRA，正常加载模型
-                    success = await self.load_model(model)
-                    if not success:
-                        raise RuntimeError(f"无法加载模型: {model}")
-                else:
-                    # 已加载 LoRA，检查基座模型是否匹配
-                    logger.info(f"已加载 LoRA 模型，基座: {self.current_model_name}, LoRA: {self.current_lora_path}")
+                success = await self.load_model(model)
+                if not success:
+                    raise RuntimeError(f"无法加载模型: {model}")
             
             # 构建prompt
             prompt = self._build_prompt(messages)
@@ -544,17 +414,10 @@ class TransformersService:
         """
         try:
             # 确保模型已加载
-            # 注意：如果已经加载了 LoRA 模型，不要重新加载基座模型
             if self.current_model_name != model:
-                # 检查是否已加载同一基座模型的 LoRA
-                if self.current_lora_path is None:
-                    # 没有 LoRA，正常加载模型
-                    success = await self.load_model(model)
-                    if not success:
-                        raise RuntimeError(f"无法加载模型: {model}")
-                else:
-                    # 已加载 LoRA，检查基座模型是否匹配
-                    logger.info(f"已加载 LoRA 模型，基座: {self.current_model_name}, LoRA: {self.current_lora_path}")
+                success = await self.load_model(model)
+                if not success:
+                    raise RuntimeError(f"无法加载模型: {model}")
             
             # 构建prompt
             prompt = self._build_prompt(messages)

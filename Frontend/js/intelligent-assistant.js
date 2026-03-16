@@ -46,6 +46,10 @@ function setupEventListeners() {
     // 知识库选择变化
     document.getElementById('kbSelect')?.addEventListener('change', onKnowledgeBaseChange);
     
+    // LLM 模型选择变化 - 加载对应的 LoRA 模型
+    document.getElementById('llmModelSelect')?.addEventListener('change', onLLMModelChange);
+    document.getElementById('editLlmModelSelect')?.addEventListener('change', onEditLLMModelChange);
+    
     // 提示词模板选择
     document.getElementById('promptTemplateSelect')?.addEventListener('change', onPromptTemplateChange);
     document.getElementById('editPromptTemplateSelect')?.addEventListener('change', onEditPromptTemplateChange);
@@ -400,6 +404,64 @@ function onKnowledgeBaseChange(e) {
     }
 }
 
+// ==================== LoRA 模型加载 ====================
+
+async function onLLMModelChange(e) {
+    const llmModel = e.target.value;
+    await loadLoRAModelsForBase(llmModel, 'loraModelSelect', 'loraModelGroup');
+}
+
+async function onEditLLMModelChange(e) {
+    const llmModel = e.target.value;
+    await loadLoRAModelsForBase(llmModel, 'editLoraModelSelect', 'editLoraModelGroup');
+}
+
+async function loadLoRAModelsForBase(baseModel, selectId, groupId) {
+    const loraSelect = document.getElementById(selectId);
+    const loraGroup = document.getElementById(groupId);
+    
+    if (!loraSelect || !loraGroup) return;
+    
+    if (!baseModel) {
+        // 没有选择基座模型，隐藏 LoRA 选择
+        loraGroup.classList.add('hidden');
+        return;
+    }
+    
+    try {
+        // 调用 API 获取匹配的 LoRA 模型
+        const response = await fetch(`${API_BASE_URL}/api/lora/models?base_model=${encodeURIComponent(baseModel)}`);
+        
+        if (!response.ok) {
+            throw new Error('加载 LoRA 模型失败');
+        }
+        
+        const data = await response.json();
+        const loraModels = data.models || [];
+        
+        // 清空并重新填充选项
+        loraSelect.innerHTML = '<option value="">不使用 LoRA</option>';
+        
+        if (loraModels.length > 0) {
+            loraModels.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.id;
+                option.textContent = model.name;
+                loraSelect.appendChild(option);
+            });
+            
+            // 显示 LoRA 选择框
+            loraGroup.classList.remove('hidden');
+        } else {
+            // 没有匹配的 LoRA 模型，隐藏选择框
+            loraGroup.classList.add('hidden');
+        }
+    } catch (error) {
+        console.error('加载 LoRA 模型失败:', error);
+        loraGroup.classList.add('hidden');
+    }
+}
+
 function onPromptTemplateChange(e) {
     const templateName = e.target.value;
     const textarea = document.getElementById('systemPrompt');
@@ -426,7 +488,8 @@ async function handleCreateAssistant(e) {
         llm_model: formData.get('llm_model'),
         llm_provider: document.querySelector('#llmModelSelect option:checked')?.dataset.provider || 'local',
         system_prompt: formData.get('system_prompt') || null,
-        color_theme: formData.get('color_theme')
+        color_theme: formData.get('color_theme'),
+        lora_model_id: formData.get('lora_model_id') ? parseInt(formData.get('lora_model_id')) : null
     };
     
     try {
@@ -484,7 +547,8 @@ async function handleUpdateAssistant(e) {
         llm_model: formData.get('llm_model'),
         llm_provider: document.querySelector('#editLlmModelSelect option:checked')?.dataset.provider || 'local',
         system_prompt: formData.get('system_prompt') || null,
-        color_theme: formData.get('color_theme')
+        color_theme: formData.get('color_theme'),
+        lora_model_id: formData.get('lora_model_id') ? parseInt(formData.get('lora_model_id')) : null
     };
     
     try {
@@ -584,6 +648,14 @@ async function editAssistant(id, event) {
         // 填充LLM模型
         renderEditLLMOptions();
         document.getElementById('editLlmModelSelect').value = assistant.llm_model;
+        
+        // 加载并填充 LoRA 模型
+        if (assistant.llm_model) {
+            await loadLoRAModelsForBase(assistant.llm_model, 'editLoraModelSelect', 'editLoraModelGroup');
+            if (assistant.lora_model_id) {
+                document.getElementById('editLoraModelSelect').value = assistant.lora_model_id;
+            }
+        }
         
         // 填充知识库选择（多选）
         renderEditKnowledgeBaseOptions();

@@ -339,7 +339,7 @@ async def chat_with_assistant(conversation_id: int, request: AssistantChatReques
             # 2. 获取助手配置
             cursor.execute(
                 """SELECT id, name, kb_ids, embedding_model, llm_model, 
-                          llm_provider, system_prompt 
+                          llm_provider, lora_model_id, system_prompt 
                    FROM assistants WHERE id = %s""",
                 (assistant_id,)
             )
@@ -378,7 +378,7 @@ async def chat_with_assistant(conversation_id: int, request: AssistantChatReques
             
             cursor.close()
         
-        # 6. 调用聊天服务（传递历史消息）
+        # 6. 调用聊天服务（传递历史消息和LoRA模型ID）
         chat_service = ChatService(db_manager)
         result = await chat_service.chat_with_assistant(
             kb_ids=kb_ids,
@@ -388,6 +388,7 @@ async def chat_with_assistant(conversation_id: int, request: AssistantChatReques
             top_k=5,
             llm_model=assistant['llm_model'],
             llm_provider=assistant['llm_provider'],
+            lora_model_id=assistant.get('lora_model_id'),
             temperature=request.temperature,
             use_hybrid_retrieval=request.use_hybrid_retrieval
         )
@@ -463,7 +464,7 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                 # 获取对话和助手信息
                 cursor.execute(
                     """SELECT c.id, c.assistant_id, a.kb_ids, a.llm_model, 
-                              a.llm_provider, a.system_prompt
+                              a.llm_provider, a.lora_model_id, a.system_prompt
                        FROM conversations c
                        JOIN assistants a ON c.assistant_id = a.id
                        WHERE c.id = %s""",
@@ -503,7 +504,7 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                 )
                 cursor.close()
             
-            # 调用流式聊天服务（传递历史消息）
+            # 调用流式聊天服务（传递历史消息和LoRA模型ID）
             chat_service = ChatService(db_manager)
             async for chunk in chat_service.chat_stream(
                 kb_ids=kb_ids,
@@ -513,6 +514,7 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                 top_k=5,
                 llm_model=conv['llm_model'],
                 llm_provider=conv['llm_provider'],
+                lora_model_id=conv.get('lora_model_id'),
                 temperature=request.temperature,
                 use_hybrid_retrieval=request.use_hybrid_retrieval
             ):

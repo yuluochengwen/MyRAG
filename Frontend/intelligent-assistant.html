@@ -166,6 +166,18 @@
               </select>
             </div>
             
+            <!-- LoRA 权重选择 -->
+            <div id="loraModelGroup" class="hidden">
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                LoRA 权重 <span class="text-xs text-gray-500">(可选)</span>
+              </label>
+              <select id="loraModelSelect" name="lora_model_id"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+                <option value="">不使用 LoRA</option>
+              </select>
+              <p class="mt-1 text-xs text-gray-500">为此模型挂载 LoRA 微调权重</p>
+            </div>
+            
             <!-- 提示词模板 -->
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">提示词模板</label>
@@ -276,6 +288,19 @@
               <select id="editLlmModelSelect" name="llm_model" required
                       class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
               </select>
+            </div>
+            
+            <!-- LoRA 权重选择 -->
+            <div id="editLoraModelGroup" class="hidden">
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                LoRA 权重 <span class="text-xs text-gray-500">(可选)</span>
+              </label>
+              <select id="editLoraModelSelect" name="lora_model_id"
+                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
+                <option value="">不使用 LoRA</option>
+              </select>
+              <p class="mt-1 text-xs text-gray-500">为此模型挂载 LoRA 微调权重</p>
+            </div>
             </div>
             
             <!-- 提示词模板 -->

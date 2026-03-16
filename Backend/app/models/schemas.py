@@ -271,6 +271,7 @@ class AssistantCreate(BaseModel):
     embedding_model: Optional[str] = Field(None, description="嵌入模型(选择KB时自动继承)")
     llm_model: str = Field(..., description="大语言模型")
     llm_provider: str = Field(default="local", description="LLM提供方: local, ollama, openai, azure")
+    lora_model_id: Optional[int] = Field(None, description="LoRA模型ID(可选)")
     system_prompt: Optional[str] = Field(None, description="系统提示词")
     color_theme: str = Field(default="blue", description="卡片配色主题")
     
@@ -297,6 +298,7 @@ class AssistantResponse(BaseModel):
     embedding_model: str
     llm_model: str
     llm_provider: str
+    lora_model_id: Optional[int] = None  # LoRA模型ID
     system_prompt: Optional[str]
     color_theme: str
     status: str
