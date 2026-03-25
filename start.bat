@@ -76,7 +76,7 @@ echo [OK] Dependencies ready
 type nul > Backend\.deps_ready
 
 :init_db
-python Backend\scripts\init_db.py 2>nul
+python scripts\db\init_db.py 2>nul
 if errorlevel 1 (
     echo [WARNING] Database init skipped (may already be initialized^)
 ) else (
@@ -109,7 +109,7 @@ if not exist "data\training_data" mkdir "data\training_data"
 REM Ensure Backend package path is importable (for `from app...` imports)
 set "PYTHONPATH=%CD%\Backend;%PYTHONPATH%"
 
-python -m uvicorn Backend.main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn Backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir Backend
 
 echo.
 echo [INFO] Service stopped

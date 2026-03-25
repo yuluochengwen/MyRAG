@@ -45,3 +45,8 @@ html {
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
 }
+
+.session-item-active {
+  border-color: #165dff !important;
+  background-color: rgba(22, 93, 255, 0.08);
+}

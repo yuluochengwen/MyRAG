@@ -3,7 +3,7 @@ import os
 import sys
 
 # 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'Backend'))
 
 from app.core.database import db_manager
 from app.utils.logger import get_logger
@@ -110,6 +110,51 @@ def init_database():
         )
         return cursor.fetchone() is not None
 
+    def _has_exact_fulltext_index(cursor, table_name: str, columns: tuple[str, ...]) -> bool:
+        """检查表上是否存在与指定列列表完全一致的 FULLTEXT 索引。"""
+        cursor.execute(
+            """
+            SELECT INDEX_NAME, COLUMN_NAME
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+              AND INDEX_TYPE = 'FULLTEXT'
+            ORDER BY INDEX_NAME, SEQ_IN_INDEX
+            """,
+            (table_name,)
+        )
+
+        rows = cursor.fetchall() or []
+        if not rows:
+            return False
+
+        index_columns: dict[str, list[str]] = {}
+        for row in rows:
+            index_name = row.get('INDEX_NAME')
+            column_name = row.get('COLUMN_NAME')
+            if not index_name or not column_name:
+                continue
+            index_columns.setdefault(index_name, []).append(column_name)
+
+        required = list(columns)
+        return any(cols == required for cols in index_columns.values())
+
+    def _ensure_text_chunks_fulltext_index(cursor):
+        """确保 text_chunks.content 存在可用于 MATCH(content) 的 FULLTEXT 索引。"""
+        if _has_exact_fulltext_index(cursor, 'text_chunks', ('content',)):
+            return
+
+        # 兼容历史库：若 ft_content 已被占用则自动生成不冲突索引名。
+        candidate_name = 'ft_content'
+        if _index_exists(cursor, 'text_chunks', candidate_name):
+            suffix = 1
+            while _index_exists(cursor, 'text_chunks', f'ft_content_{suffix}'):
+                suffix += 1
+            candidate_name = f'ft_content_{suffix}'
+
+        cursor.execute(f"ALTER TABLE text_chunks ADD FULLTEXT KEY {candidate_name} (content)")
+        logger.info(f"已补齐 text_chunks.content 的 FULLTEXT 索引: {candidate_name}")
+
     def _fk_exists(cursor, table_name: str, fk_name: str) -> bool:
         cursor.execute(
             """
@@ -163,6 +208,9 @@ def init_database():
             # 先执行主初始化脚本
             init_sql = os.path.join(os.path.dirname(__file__), 'init.sql')
             _execute_sql_file(cursor, init_sql)
+
+            # 兜底修复历史库中缺失/不匹配的 FULLTEXT 索引。
+            _ensure_text_chunks_fulltext_index(cursor)
 
             # 执行 Python 级兜底迁移，防止旧字段残留
             _ensure_lora_schema(cursor)

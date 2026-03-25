@@ -1,4 +1,5 @@
 """Ollama嵌入模型服务"""
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import numpy as np
 from typing import List, Optional
@@ -18,12 +19,42 @@ class OllamaEmbeddingService:
             self.base_url = ollama_config.get('base_url', 'http://localhost:11434')
             self.timeout = ollama_config.get('timeout', 30)
             self.default_model = ollama_config.get('default_model', 'nomic-embed-text')
+            self.max_workers = max(1, int(ollama_config.get('max_workers', 4) or 4))
         else:
             self.base_url = 'http://localhost:11434'
             self.timeout = 30
             self.default_model = 'nomic-embed-text'
+            self.max_workers = 4
         
-        logger.info(f"Ollama嵌入服务初始化: base_url={self.base_url}")
+        logger.info(f"Ollama嵌入服务初始化: base_url={self.base_url}, max_workers={self.max_workers}")
+
+    def _request_embedding(self, text: str, model_name: str) -> List[float]:
+        response = requests.post(
+            f"{self.base_url}/api/embeddings",
+            json={
+                "model": model_name,
+                "prompt": text
+            },
+            timeout=self.timeout
+        )
+
+        if response.status_code != 200:
+            error_msg = f"Ollama API返回错误: {response.status_code} - {response.text}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        result = response.json()
+        embedding = result.get('embedding')
+
+        if not embedding:
+            raise RuntimeError(f"Ollama返回的响应中没有embedding字段: {result}")
+
+        # 归一化向量（重要：ChromaDB需要归一化的向量以正确计算L2距离）
+        embedding_array = np.array(embedding)
+        norm = np.linalg.norm(embedding_array)
+        if norm > 0:
+            return (embedding_array / norm).tolist()
+        return embedding
     
     def is_available(self) -> bool:
         """
@@ -71,56 +102,40 @@ class OllamaEmbeddingService:
             
             logger.info(f"使用Ollama编码文本: count={len(texts)}, model={model_name}")
             
-            embeddings = []
+            if len(texts) == 1:
+                return [self._request_embedding(texts[0], model_name)]
+
+            embeddings: List[Optional[List[float]]] = [None] * len(texts)
+            max_workers = min(self.max_workers, len(texts))
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(self._request_embedding, text, model_name): index
+                    for index, text in enumerate(texts)
+                }
+
+                done = 0
+                for future in as_completed(future_map):
+                    index = future_map[future]
+                    try:
+                        embeddings[index] = future.result()
+                        done += 1
+                        if done % 10 == 0 or done == len(texts):
+                            logger.info(f"编码进度: {done}/{len(texts)}")
+                    except requests.exceptions.Timeout:
+                        logger.error(f"Ollama请求超时: text_index={index}")
+                        raise RuntimeError("Ollama请求超时，请检查服务状态或增加timeout配置")
+                    except requests.exceptions.RequestException as error:
+                        logger.error(f"Ollama请求失败: {str(error)}")
+                        raise RuntimeError(f"Ollama请求失败: {str(error)}")
+
+            ordered_embeddings = [embedding if embedding is not None else [] for embedding in embeddings]
             
-            # Ollama API一次只能处理一个文本
-            for i, text in enumerate(texts):
-                try:
-                    response = requests.post(
-                        f"{self.base_url}/api/embeddings",
-                        json={
-                            "model": model_name,
-                            "prompt": text
-                        },
-                        timeout=self.timeout
-                    )
-                    
-                    if response.status_code != 200:
-                        error_msg = f"Ollama API返回错误: {response.status_code} - {response.text}"
-                        logger.error(error_msg)
-                        raise RuntimeError(error_msg)
-                    
-                    result = response.json()
-                    embedding = result.get('embedding')
-                    
-                    if not embedding:
-                        raise RuntimeError(f"Ollama返回的响应中没有embedding字段: {result}")
-                    
-                    # 归一化向量（重要：ChromaDB需要归一化的向量以正确计算L2距离）
-                    embedding_array = np.array(embedding)
-                    norm = np.linalg.norm(embedding_array)
-                    if norm > 0:
-                        embedding_normalized = (embedding_array / norm).tolist()
-                    else:
-                        embedding_normalized = embedding
-                    
-                    embeddings.append(embedding_normalized)
-                    
-                    # 显示进度
-                    if (i + 1) % 10 == 0 or (i + 1) == len(texts):
-                        logger.info(f"编码进度: {i + 1}/{len(texts)}")
-                
-                except requests.exceptions.Timeout:
-                    logger.error(f"Ollama请求超时: text_index={i}")
-                    raise RuntimeError(f"Ollama请求超时，请检查服务状态或增加timeout配置")
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"Ollama请求失败: {str(e)}")
-                    raise RuntimeError(f"Ollama请求失败: {str(e)}")
+            logger.info(f"Ollama编码完成: vectors={len(ordered_embeddings)}, "
+                       f"dimension={len(ordered_embeddings[0]) if ordered_embeddings else 0}, "
+                       f"workers={max_workers}")
             
-            logger.info(f"Ollama编码完成: vectors={len(embeddings)}, "
-                       f"dimension={len(embeddings[0]) if embeddings else 0}")
-            
-            return embeddings
+            return ordered_embeddings
             
         except Exception as e:
             logger.error(f"Ollama文本编码失败: {str(e)}")

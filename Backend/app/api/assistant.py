@@ -8,52 +8,13 @@ from app.core.database import DatabaseManager
 from app.models.schemas import (
     AssistantCreate, 
     AssistantResponse, 
-    ModelInfo, 
-    PromptTemplate, 
-    PromptTemplateList
+    ModelInfo
 )
-from app.services.model_scanner import model_scanner
+from app.services.model.model_scanner import model_scanner
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/assistants", tags=["智能助手"])
-
-
-# ==================== 提示词模板 ====================
-
-PROMPT_TEMPLATES = [
-    PromptTemplate(
-        name="通用对话助手",
-        description="适合日常交流的友好助手",
-        content="你是一个友好、专业的AI助手。请用简洁、准确的语言回答用户问题。"
-    ),
-    PromptTemplate(
-        name="知识库问答助手",
-        description="基于知识库进行专业问答",
-        content="你是一个专业的知识库问答助手。请基于提供的参考资料,给出准确、详细的回答。如果资料中没有相关信息,请如实告知用户。"
-    ),
-    PromptTemplate(
-        name="产品顾问",
-        description="专业的产品咨询助手",
-        content="你是一个专业的产品顾问。请根据产品知识库中的信息,为客户提供专业、详细的产品咨询服务。重点突出产品优势和适用场景。"
-    ),
-    PromptTemplate(
-        name="研发助手",
-        description="帮助开发者解决技术问题",
-        content="你是一个专业的研发助手。请根据技术文档和代码库,帮助开发者解决技术问题。回答需要准确、清晰,并提供代码示例。"
-    ),
-    PromptTemplate(
-        name="销售助手",
-        description="辅助销售人员进行客户沟通",
-        content="你是一个专业的销售助手。请根据产品和客户信息,帮助销售人员制定沟通策略,提供专业的解决方案。语言要友好、有说服力。"
-    ),
-]
-
-
-@router.get("/prompt-templates", response_model=PromptTemplateList)
-async def get_prompt_templates():
-    """获取提示词模板列表"""
-    return PromptTemplateList(templates=PROMPT_TEMPLATES)
 
 
 # ==================== 助手CRUD ====================
@@ -104,7 +65,7 @@ async def create_assistant(
                 )
         elif assistant_data.llm_provider == "ollama":
             # 验证Ollama模型
-            from app.services.ollama_llm_service import get_ollama_llm_service
+            from app.services.llm.ollama_llm_service import get_ollama_llm_service
             ollama_service = get_ollama_llm_service()
             
             if not ollama_service.is_available():
@@ -345,7 +306,7 @@ async def update_assistant(
                 )
         elif assistant_data.llm_provider == "ollama":
             # 验证Ollama模型
-            from app.services.ollama_llm_service import get_ollama_llm_service
+            from app.services.llm.ollama_llm_service import get_ollama_llm_service
             ollama_service = get_ollama_llm_service()
             
             if not ollama_service.is_available():

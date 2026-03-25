@@ -7,7 +7,7 @@
   <!-- 引入Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- 引入Font Awesome -->
-  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet" onerror="this.onerror=null;this.href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';">
   <!-- 引入自定义样式 -->
   <link rel="stylesheet" href="css/intelligent-assistant.css">
   
@@ -51,7 +51,7 @@
         <nav class="hidden md:flex items-center space-x-1">
           <a href="knowledge-base.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">知识库</a>
           <a href="intelligent-assistant.html" class="nav-link nav-active px-4 py-2 font-medium border-b-2 transition-custom">智能助手</a>
-          <a href="agent.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">Agent</a>
+          <a href="agent-demo.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">Agent</a>
           <a href="model-management.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">模型管理</a>
         </nav>
         
@@ -77,7 +77,7 @@
         <nav class="flex flex-col space-y-2">
           <a href="knowledge-base.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">知识库</a>
           <a href="intelligent-assistant.html" class="mobile-nav-link nav-active px-4 py-3 font-medium bg-primary/5 rounded-lg text-primary transition-custom">智能助手</a>
-          <a href="agent.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">Agent</a>
+          <a href="agent-demo.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">Agent</a>
           <a href="model-management.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">模型管理</a>
         </nav>
       </div>
@@ -176,15 +176,6 @@
                 <option value="">不使用 LoRA</option>
               </select>
               <p class="mt-1 text-xs text-gray-500">为此模型挂载 LoRA 微调权重</p>
-            </div>
-            
-            <!-- 提示词模板 -->
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">提示词模板</label>
-              <select id="promptTemplateSelect"
-                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
-                <option value="">选择模板(可选)</option>
-              </select>
             </div>
             
             <div>
@@ -300,16 +291,6 @@
                 <option value="">不使用 LoRA</option>
               </select>
               <p class="mt-1 text-xs text-gray-500">为此模型挂载 LoRA 微调权重</p>
-            </div>
-            </div>
-            
-            <!-- 提示词模板 -->
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">提示词模板</label>
-              <select id="editPromptTemplateSelect"
-                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">
-                <option value="">选择模板(可选)</option>
-              </select>
             </div>
             
             <div>

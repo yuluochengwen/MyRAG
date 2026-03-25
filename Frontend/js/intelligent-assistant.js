@@ -9,7 +9,6 @@ let assistants = [];
 let knowledgeBases = [];
 let llmModels = { local: [], remote: [] };
 let embeddingModels = [];
-let promptTemplates = [];
 
 // ==================== 初始化 ====================
 
@@ -24,8 +23,7 @@ async function loadInitialData() {
         await Promise.all([
             loadAssistants(),
             loadKnowledgeBases(),
-            loadModels(),
-            loadPromptTemplates()
+            loadModels()
         ]);
     } catch (error) {
         showMessage('加载数据失败: ' + error.message, 'error');
@@ -49,10 +47,6 @@ function setupEventListeners() {
     // LLM 模型选择变化 - 加载对应的 LoRA 模型
     document.getElementById('llmModelSelect')?.addEventListener('change', onLLMModelChange);
     document.getElementById('editLlmModelSelect')?.addEventListener('change', onEditLLMModelChange);
-    
-    // 提示词模板选择
-    document.getElementById('promptTemplateSelect')?.addEventListener('change', onPromptTemplateChange);
-    document.getElementById('editPromptTemplateSelect')?.addEventListener('change', onEditPromptTemplateChange);
     
     // 提交表单
     document.getElementById('createAssistantForm')?.addEventListener('submit', handleCreateAssistant);
@@ -106,15 +100,6 @@ async function loadModels() {
         const data = await embResponse.json();
         embeddingModels = data.models || [];
         renderEmbeddingOptions();
-    }
-}
-
-async function loadPromptTemplates() {
-    const response = await fetch(`${API_BASE_URL}/api/assistants/prompt-templates`);
-    if (response.ok) {
-        const data = await response.json();
-        promptTemplates = data.templates || [];
-        renderPromptTemplateOptions();
     }
 }
 
@@ -333,18 +318,6 @@ function renderEmbeddingOptions() {
     select.innerHTML = html || '<option value="">无可用模型</option>';
 }
 
-function renderPromptTemplateOptions() {
-    const select = document.getElementById('promptTemplateSelect');
-    if (!select) return;
-    
-    let html = '<option value="">选择提示词模板(可选)</option>';
-    html += promptTemplates.map(tpl => 
-        `<option value="${tpl.name}">${tpl.name} - ${tpl.description}</option>`
-    ).join('');
-    
-    select.innerHTML = html;
-}
-
 // ==================== 事件处理 ====================
 
 function onKnowledgeBaseChange(e) {
@@ -459,18 +432,6 @@ async function loadLoRAModelsForBase(baseModel, selectId, groupId) {
     } catch (error) {
         console.error('加载 LoRA 模型失败:', error);
         loraGroup.classList.add('hidden');
-    }
-}
-
-function onPromptTemplateChange(e) {
-    const templateName = e.target.value;
-    const textarea = document.getElementById('systemPrompt');
-    
-    if (templateName && textarea) {
-        const template = promptTemplates.find(t => t.name === templateName);
-        if (template) {
-            textarea.value = template.content;
-        }
     }
 }
 
@@ -670,9 +631,6 @@ async function editAssistant(id, event) {
         const colorRadio = document.querySelector(`#editAssistantForm input[name="color_theme"][value="${assistant.color_theme}"]`);
         if (colorRadio) colorRadio.checked = true;
         
-        // 填充提示词模板选项
-        renderEditPromptTemplateOptions();
-        
         // 打开模态框
         document.getElementById('editAssistantModal').classList.remove('hidden');
         
@@ -787,30 +745,6 @@ function renderEditLLMOptions() {
     }
     
     select.innerHTML = html || '<option value="">无可用模型</option>';
-}
-
-function renderEditPromptTemplateOptions() {
-    const select = document.getElementById('editPromptTemplateSelect');
-    if (!select) return;
-    
-    let html = '<option value="">选择提示词模板(可选)</option>';
-    html += promptTemplates.map(tpl => 
-        `<option value="${tpl.name}">${tpl.name} - ${tpl.description}</option>`
-    ).join('');
-    
-    select.innerHTML = html;
-}
-
-function onEditPromptTemplateChange(e) {
-    const templateName = e.target.value;
-    const textarea = document.getElementById('editSystemPrompt');
-    
-    if (templateName && textarea) {
-        const template = promptTemplates.find(t => t.name === templateName);
-        if (template) {
-            textarea.value = template.content;
-        }
-    }
 }
 
 function showLoading(show) {

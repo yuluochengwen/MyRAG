@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Agent 智能体 - RAGFlow.ai</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet" onerror="this.onerror=null;this.href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';">
+  <link rel="stylesheet" href="css/agent.css">
   
   <script>
     tailwind.config = {
@@ -26,7 +27,7 @@
     }
   </script>
 </head>
-<body class="font-sans bg-gray-50 text-dark min-h-screen flex flex-col">
+<body class="font-sans bg-gray-50 text-dark h-screen flex flex-col overflow-hidden">
   
   <!-- 顶部导航栏 -->
   <header class="bg-white shadow-sm sticky top-0 z-50">
@@ -57,18 +58,81 @@
   </header>
 
   <!-- 主内容区域 -->
-  <main class="flex-grow container mx-auto px-4 py-6">
-    
-    <!-- 页面标题和介绍 -->
-    <div class="mb-6">
-      <h1 class="text-3xl font-bold mb-2">Agent 智能体</h1>
-      <p class="text-gray-600">Agent 能够自主规划任务、调用工具、整合信息，帮你完成复杂目标</p>
-    </div>
+  <main class="flex-grow min-h-0">
+    <div class="container mx-auto h-full min-h-0 px-4 py-4 flex flex-col">
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- 页面标题和介绍 -->
+      <div class="mb-4 shrink-0">
+        <h1 class="text-3xl font-bold mb-2">Agent 智能体</h1>
+        <p class="text-gray-600">Agent 能够自主规划任务、调用工具、整合信息，帮你完成复杂目标</p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0 lg:overflow-hidden">
       
-      <!-- 左侧: Agent 介绍 -->
-      <div class="lg:col-span-1 space-y-4">
+      <!-- 左侧: Agent 配置与会话 -->
+      <div class="lg:col-span-1 space-y-4 overflow-y-auto pr-1 min-h-0">
+
+        <!-- 运行配置 -->
+        <div class="bg-white rounded-xl p-6 shadow-sm">
+          <h2 class="text-lg font-bold mb-4 flex items-center">
+            <i class="fa fa-sliders text-indigo-500 mr-2"></i>
+            运行配置
+          </h2>
+          <div class="space-y-3">
+            <div>
+              <label for="agent-model" class="block text-sm text-gray-600 mb-1">模型</label>
+              <select id="agent-model" class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/30">
+                <option value="qwen2.5:7b">qwen2.5:7b</option>
+              </select>
+            </div>
+            <div>
+              <label for="agent-kb-dropdown-toggle" class="block text-sm text-gray-600 mb-1">知识库白名单（可多选）</label>
+              <div id="agent-kb-dropdown" class="relative">
+                <button id="agent-kb-dropdown-toggle" type="button" class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-primary/30">
+                  <span id="agent-kb-dropdown-label" class="text-gray-700">全部知识库</span>
+                  <i class="fa fa-chevron-down text-xs text-gray-500"></i>
+                </button>
+                <div id="agent-kb-dropdown-menu" class="hidden absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+                  <label class="flex items-center px-3 py-2 border-b border-gray-100 text-sm text-gray-700">
+                    <input id="agent-kb-select-all" type="checkbox" class="mr-2" checked>
+                    全部知识库
+                  </label>
+                  <div id="agent-kb-options" class="max-h-52 overflow-y-auto p-2 space-y-1"></div>
+                </div>
+              </div>
+              <p class="text-xs text-gray-500 mt-1">点击下拉框展开后可多选；勾选“全部知识库”表示不限制范围。</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label for="agent-max-iterations" class="block text-sm text-gray-600 mb-1">最大迭代</label>
+                <input id="agent-max-iterations" type="number" min="1" max="10" value="5" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30">
+              </div>
+              <div>
+                <label for="agent-temperature" class="block text-sm text-gray-600 mb-1">温度</label>
+                <input id="agent-temperature" type="number" min="0" max="1" step="0.1" value="0.1" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30">
+              </div>
+            </div>
+            <label class="inline-flex items-center text-sm text-gray-700">
+              <input id="agent-show-steps" type="checkbox" checked class="mr-2">
+              显示执行步骤
+            </label>
+          </div>
+        </div>
+
+        <!-- 会话列表 -->
+        <div class="bg-white rounded-xl p-6 shadow-sm">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-bold flex items-center">
+              <i class="fa fa-comments text-cyan-500 mr-2"></i>
+              会话
+            </h2>
+            <div class="space-x-2">
+              <button id="new-agent-session" class="px-2 py-1 text-xs bg-primary text-white rounded hover:bg-primary/90 transition">新建</button>
+              <button id="clear-agent-session" class="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition">清空</button>
+            </div>
+          </div>
+          <div id="agent-session-list" class="space-y-2 max-h-56 overflow-y-auto"></div>
+        </div>
         
         <!-- Agent 能力卡片 -->
         <div class="bg-white rounded-xl p-6 shadow-sm">
@@ -146,8 +210,8 @@
       </div>
 
       <!-- 右侧: 对话界面 -->
-      <div class="lg:col-span-2">
-        <div class="bg-white rounded-xl shadow-sm flex flex-col h-[calc(100vh-200px)]">
+      <div class="lg:col-span-2 min-h-0">
+        <div class="bg-white rounded-xl shadow-sm flex flex-col h-full min-h-0">
           
           <!-- 对话头部 -->
           <div class="p-4 border-b border-gray-200">
@@ -161,7 +225,7 @@
                   <div class="text-xs text-gray-500">在线 • 基于 ReAct 框架</div>
                 </div>
               </div>
-              <button class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg transition">
+              <button id="new-agent-session-main" class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg transition">
                 <i class="fa fa-refresh mr-1"></i> 新对话
               </button>
             </div>
@@ -184,24 +248,24 @@
           </div>
 
           <!-- 统计信息 -->
-          <div id="agent-stats" class="px-6 py-2 border-t border-gray-100 bg-gray-50">
-            <!-- 统计信息将在这里显示 -->
+          <div id="agent-stats" class="px-6 py-2 border-t border-gray-100 bg-gray-50 text-sm text-gray-600">
+            统计信息将在首次问答后显示
           </div>
 
           <!-- 输入区域 -->
           <div class="p-4 border-t border-gray-200">
-            <div class="flex items-end space-x-3">
+            <div class="flex items-stretch space-x-3">
               <div class="flex-1">
                 <textarea 
                   id="agent-query-input"
-                  rows="2"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-none"
+                  rows="1"
+                  class="w-full h-11 min-h-11 max-h-11 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-none leading-6"
                   placeholder="输入你的问题或目标..."
                 ></textarea>
               </div>
               <button 
                 id="send-agent-query"
-                class="px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition shadow-md hover:shadow-lg flex items-center justify-center h-[56px]"
+                class="h-11 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition shadow-md hover:shadow-lg flex items-center justify-center"
               >
                 <i class="fa fa-paper-plane mr-2"></i>
                 发送
@@ -211,16 +275,18 @@
               <i class="fa fa-info-circle mr-1"></i>
               按 Enter 发送，Shift + Enter 换行
             </div>
+            <div id="agent-status-hint" class="mt-1 text-xs text-gray-500"></div>
           </div>
 
         </div>
       </div>
 
+      </div>
     </div>
-
   </main>
 
   <!-- 引入 Agent JS -->
+  <script src="js/config.js"></script>
   <script src="js/agent.js"></script>
 </body>
 </html>

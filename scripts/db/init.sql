@@ -177,9 +177,3 @@ CREATE TABLE IF NOT EXISTS messages (
     INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='消息表';
 
--- 示例助手数据(幂等插入,避免重复)
-INSERT INTO assistants (name, description, kb_ids, embedding_model, llm_model, system_prompt, color_theme, conversation_count, total_messages, status) VALUES
-('通用对话助手', '不绑定知识库的通用对话助手,可进行日常交流', NULL, 'all-MiniLM-L6-v2', 'DeepSeek-OCR-3B', '你是一个友好、专业的AI助手。请用简洁、准确的语言回答用户问题。', 'blue', 128, 256, 'active'),
-('知识库问答助手', '基于知识库的专业问答助手,提供精准答案', '4,5', 'bert-base-chinese', 'DeepSeek-OCR-3B', '你是一个专业的知识库问答助手。请基于提供的参考资料,给出准确、详细的回答。如果资料中没有相关信息,请如实告知用户。', 'purple', 256, 512, 'active'),
-('研发助手', '帮助研发人员解决技术问题', NULL, 'all-MiniLM-L6-v2', 'DeepSeek-OCR-3B', '你是一个专业的技术支持助手,擅长解答编程和开发问题。', 'orange', 89, 178, 'active')
-ON DUPLICATE KEY UPDATE name=name;

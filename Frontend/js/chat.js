@@ -10,6 +10,15 @@ let currentAssistant = null;
 let currentConversation = null;
 let conversations = [];
 let isProcessing = false;
+let autoScrollEnabled = true;
+let isStreamingResponse = false;
+let streamingAbortController = null;
+let streamDraftSaveTimer = null;
+
+const STREAM_DRAFT_PREFIX = 'chat_stream_draft_v1';
+const LAST_GRAPH_PREFIX = 'chat_last_graph_v1';
+const HYBRID_TOGGLE_PREFIX = 'chat_hybrid_retrieval_v1';
+const AUTO_SCROLL_THRESHOLD_PX = 80;
 
 // ==================== 初始化 ====================
 
@@ -25,19 +34,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     await loadAssistant(assistantId);
+    restoreHybridRetrievalToggle();
     await loadConversations(assistantId);
     setupEventListeners();
     
     // 初始化记忆状态显示
     updateMemoryStatus();
     
-    // 自动创建第一个对话或选择最近的对话
+    // 自动进入可对话会话：有会话则选中最新，无会话则创建并切换
+    await ensureActiveConversation();
+});
+
+async function ensureActiveConversation() {
     if (conversations.length === 0) {
         await createNewConversation();
-    } else {
-        await switchConversation(conversations[0].id);
+        return;
     }
-});
+
+    const sorted = [...conversations].sort(
+        (a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0)
+    );
+    const target = sorted[0];
+    if (target && target.id) {
+        await switchConversation(target.id, { force: true });
+    }
+}
 
 function setupEventListeners() {
     // 新建对话
@@ -62,6 +83,12 @@ function setupEventListeners() {
     // 记忆轮数输入框变化时更新状态提示
     document.getElementById('maxHistoryTurns')?.addEventListener('input', updateMemoryStatus);
     document.getElementById('maxHistoryTurns')?.addEventListener('change', updateMemoryStatus);
+
+    // 深度思考开关：状态文案跟随当前模型提供方
+    document.getElementById('deepThinkingToggle')?.addEventListener('change', updateDeepThinkingToggleAvailability);
+
+    // 混合检索开关持久化
+    document.getElementById('hybridRetrievalToggle')?.addEventListener('change', persistHybridRetrievalToggle);
     
     // 设置菜单切换
     document.getElementById('settingsMenuBtn')?.addEventListener('click', function(e) {
@@ -103,6 +130,40 @@ function setupEventListeners() {
             document.getElementById('messageForm').dispatchEvent(new Event('submit'));
         }
     });
+
+    bindMessagesScrollBehavior();
+
+    // 页面离开时中止流式请求；已接收片段会通过本地草稿恢复
+    window.addEventListener('pagehide', () => {
+        if (streamingAbortController) {
+            streamingAbortController.abort();
+        }
+    });
+}
+
+function getHybridToggleKey(assistantId) {
+    return `${HYBRID_TOGGLE_PREFIX}:${assistantId}`;
+}
+
+function persistHybridRetrievalToggle() {
+    if (!currentAssistant?.id) return;
+
+    const toggle = document.getElementById('hybridRetrievalToggle');
+    if (!toggle) return;
+
+    localStorage.setItem(getHybridToggleKey(currentAssistant.id), toggle.checked ? '1' : '0');
+}
+
+function restoreHybridRetrievalToggle() {
+    if (!currentAssistant?.id) return;
+
+    const toggle = document.getElementById('hybridRetrievalToggle');
+    if (!toggle) return;
+
+    const savedValue = localStorage.getItem(getHybridToggleKey(currentAssistant.id));
+    if (savedValue === null) return;
+
+    toggle.checked = savedValue === '1';
 }
 
 // ==================== 数据加载 ====================
@@ -115,11 +176,32 @@ async function loadAssistant(assistantId) {
         currentAssistant = await response.json();
         renderAssistantInfo();
         renderChatHeader();
+        updateDeepThinkingToggleAvailability();
     } catch (error) {
         console.error('加载助手失败:', error);
         alert('加载助手信息失败: ' + error.message);
         window.location.href = 'intelligent-assistant.html';
     }
+}
+
+function updateDeepThinkingToggleAvailability() {
+    const toggle = document.getElementById('deepThinkingToggle');
+    const hint = document.getElementById('deepThinkingHint');
+    if (!toggle || !hint) return;
+
+    const provider = String(currentAssistant?.llm_provider || '').toLowerCase().trim();
+    const isLocalProvider = ['local', 'transformers', 'ollama'].includes(provider);
+
+    toggle.disabled = !isLocalProvider;
+    if (!isLocalProvider) {
+        toggle.checked = false;
+        hint.textContent = '(当前模型不支持)';
+        hint.className = 'text-xs text-gray-400';
+        return;
+    }
+
+    hint.textContent = '(仅本地模型)';
+    hint.className = 'text-xs text-gray-500';
 }
 
 async function loadConversations(assistantId) {
@@ -128,7 +210,9 @@ async function loadConversations(assistantId) {
         if (!response.ok) throw new Error('加载对话列表失败');
         
         const data = await response.json();
-        conversations = data.conversations || [];
+        conversations = (data.conversations || []).sort(
+            (a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0)
+        );
         renderConversationList();
     } catch (error) {
         console.error('加载对话列表失败:', error);
@@ -149,11 +233,90 @@ async function loadMessages(conversationId) {
         console.log('[loadMessages] 消息加载成功，数量:', messages.length);
         
         renderMessages(messages);
-        scrollToBottom();
+        restoreGraphFromMessagesOrSnapshot(messages);
+        restoreStreamDraftForConversation(conversationId);
+        scrollToBottom({ force: true });
     } catch (error) {
         console.error('加载消息失败:', error);
         showMessage('加载消息失败', 'error');
     }
+}
+
+function getLastGraphKey(assistantId) {
+    return `${LAST_GRAPH_PREFIX}:${assistantId}`;
+}
+
+function saveLastGraphSnapshot(sources, diagnostics = null) {
+    if (!currentAssistant?.id) return;
+    if (!Array.isArray(sources) || sources.length === 0) return;
+
+    const graphData = extractGraphDataFromResponse(sources);
+    if (!graphData || !Array.isArray(graphData.nodes) || graphData.nodes.length === 0) return;
+
+    const payload = {
+        assistantId: currentAssistant.id,
+        conversationId: currentConversation?.id || null,
+        sources,
+        diagnostics,
+        savedAt: new Date().toISOString()
+    };
+
+    try {
+        localStorage.setItem(getLastGraphKey(currentAssistant.id), JSON.stringify(payload));
+    } catch (error) {
+        console.warn('保存图谱快照失败:', error);
+    }
+}
+
+function readLastGraphSnapshot() {
+    if (!currentAssistant?.id) return null;
+    try {
+        const raw = localStorage.getItem(getLastGraphKey(currentAssistant.id));
+        if (!raw) return null;
+        const payload = JSON.parse(raw);
+        if (!payload || !Array.isArray(payload.sources)) return null;
+        return payload;
+    } catch (error) {
+        console.warn('读取图谱快照失败:', error);
+        return null;
+    }
+}
+
+function restoreGraphFromMessagesOrSnapshot(messages = []) {
+    const reversed = Array.isArray(messages) ? [...messages].reverse() : [];
+
+    for (const message of reversed) {
+        if (message?.role !== 'assistant') continue;
+        if (!Array.isArray(message.sources) || message.sources.length === 0) continue;
+
+        const graphData = extractGraphDataFromResponse(message.sources);
+        if (!graphData || !Array.isArray(graphData.nodes) || graphData.nodes.length === 0) continue;
+
+        autoShowGraphPanelIfNeeded(message.sources);
+        renderKnowledgeGraph(graphData);
+        saveLastGraphSnapshot(message.sources, null);
+        return;
+    }
+
+    const snapshot = readLastGraphSnapshot();
+    const currentConversationId = currentConversation?.id || null;
+    if (!snapshot || snapshot.conversationId !== currentConversationId) {
+        // 空会话或切换到新会话时，不复用其他会话的历史图谱。
+        renderKnowledgeGraph({ nodes: [], links: [] });
+        renderGraphDiagnostics(null);
+        return;
+    }
+
+    const graphData = extractGraphDataFromResponse(snapshot.sources || []);
+    if (!graphData || !Array.isArray(graphData.nodes) || graphData.nodes.length === 0) {
+        renderKnowledgeGraph({ nodes: [], links: [] });
+        renderGraphDiagnostics(null);
+        return;
+    }
+
+    autoShowGraphPanelIfNeeded(snapshot.sources || []);
+    renderKnowledgeGraph(graphData);
+    renderGraphDiagnostics(snapshot.diagnostics || null);
 }
 
 // ==================== 渲染函数 ====================
@@ -322,6 +485,20 @@ function updateMessageCount(count) {
     }
 }
 
+function getSourcePercent(src) {
+    const displayWeight = Number(src?.display_weight);
+    if (Number.isFinite(displayWeight)) {
+        return (Math.max(0, displayWeight) * 100).toFixed(1);
+    }
+
+    const similarity = Number(src?.similarity);
+    if (Number.isFinite(similarity)) {
+        return (Math.max(0, similarity) * 100).toFixed(1);
+    }
+
+    return '0.0';
+}
+
 function renderMessageBubble(msg) {
     const isUser = msg.role === 'user';
     const time = formatTime(msg.created_at);
@@ -343,7 +520,7 @@ function renderMessageBubble(msg) {
                     ${msg.sources.map((src, i) => `
                         <span class="source-tag" title="${escapeHtml(src.content || '')}">
                             <i class="fa fa-file-text-o"></i>
-                            来源${i + 1} (${(src.similarity * 100).toFixed(1)}%)
+                            来源${i + 1} (${getSourcePercent(src)}%)
                         </span>
                     `).join('')}
                 </div>
@@ -393,7 +570,7 @@ async function createNewConversation() {
         
         // 立即切换到新对话（这会清空消息区域并加载新对话的消息）
         console.log('[createNewConversation] 切换到新对话 ID:', newConv.id);
-        await switchConversation(newConv.id);
+        await switchConversation(newConv.id, { force: true });
         
         // 更新对话列表显示
         console.log('[createNewConversation] 更新对话列表');
@@ -408,8 +585,9 @@ async function createNewConversation() {
     }
 }
 
-async function switchConversation(conversationId) {
-    if (isProcessing) return;
+async function switchConversation(conversationId, options = {}) {
+    const force = Boolean(options.force);
+    if (isProcessing && !force) return;
     
     try {
         console.log('[switchConversation] 切换到对话:', conversationId);
@@ -671,7 +849,7 @@ function appendUserMessage(content) {
     `;
     
     container.insertAdjacentHTML('beforeend', messageHtml);
-    scrollToBottom();
+    scrollToBottom({ force: true });
 }
 
 function showThinkingIndicator() {
@@ -695,7 +873,7 @@ function showThinkingIndicator() {
     `;
     
     container.insertAdjacentHTML('beforeend', thinkingHtml);
-    scrollToBottom();
+    scrollToBottom({ force: true });
     
     return thinkingId;
 }
@@ -706,12 +884,14 @@ async function sendChatRequest(query, thinkingId) {
         const memoryEnabled = document.getElementById('memoryToggle')?.checked ?? true;
         const maxHistoryTurns = memoryEnabled ? parseInt(document.getElementById('maxHistoryTurns')?.value || '10') : 0;
         const useHybridRetrieval = document.getElementById('hybridRetrievalToggle')?.checked ?? false;
+        const enableDeepThinking = document.getElementById('deepThinkingToggle')?.checked ?? false;
         console.log('[Chat] 发送非流式请求:', {
             conversation_id: currentConversation.id,
             query: query,
             memory_enabled: memoryEnabled,
             max_history_turns: maxHistoryTurns,
-            use_hybrid_retrieval: useHybridRetrieval
+            use_hybrid_retrieval: useHybridRetrieval,
+            enable_deep_thinking: enableDeepThinking
         });
         const response = await fetch(`${API_BASE_URL}/api/conversations/${currentConversation.id}/chat`, {
             method: 'POST',
@@ -721,7 +901,8 @@ async function sendChatRequest(query, thinkingId) {
                 temperature: 0.7,
                 max_tokens: 2048,
                 max_history_turns: maxHistoryTurns,
-                use_hybrid_retrieval: useHybridRetrieval
+                use_hybrid_retrieval: useHybridRetrieval,
+                enable_deep_thinking: enableDeepThinking
             })
         });
         
@@ -741,8 +922,9 @@ async function sendChatRequest(query, thinkingId) {
         // 非流式也渲染图谱与诊断
         const graphData = extractGraphDataFromResponse(data.sources || []);
         if (graphData) {
-            renderKnowledgeGraph(graphData);
             autoShowGraphPanelIfNeeded(data.sources || []);
+            renderKnowledgeGraph(graphData);
+            saveLastGraphSnapshot(data.sources || [], data.diagnostics || null);
         }
         renderGraphDiagnostics(data.diagnostics || null);
         
@@ -762,29 +944,50 @@ async function sendChatRequestStream(query, thinkingId) {
     let messageId = null;
     let collectedText = '';
     let sourcesData = null;
+    const conversationId = currentConversation?.id;
+    if (!conversationId) {
+        throw new Error('当前会话不存在');
+    }
+
+    isStreamingResponse = true;
+    const streamDraft = {
+        conversationId,
+        assistantId: currentAssistant?.id || null,
+        query,
+        answer: '',
+        sources: [],
+        updatedAt: new Date().toISOString(),
+        status: 'streaming'
+    };
+    saveStreamDraft(streamDraft);
+    streamingAbortController = new AbortController();
     
     try {
         const memoryEnabled = document.getElementById('memoryToggle')?.checked ?? true;
         const maxHistoryTurns = memoryEnabled ? parseInt(document.getElementById('maxHistoryTurns')?.value || '10') : 0;
         const useHybridRetrieval = document.getElementById('hybridRetrievalToggle')?.checked ?? false;
+        const enableDeepThinking = document.getElementById('deepThinkingToggle')?.checked ?? false;
         
         console.log('[Chat] 发送流式请求:', {
             conversation_id: currentConversation.id,
             query: query,
             memory_enabled: memoryEnabled,
             max_history_turns: maxHistoryTurns,
-            use_hybrid_retrieval: useHybridRetrieval
+            use_hybrid_retrieval: useHybridRetrieval,
+            enable_deep_thinking: enableDeepThinking
         });
         
         const response = await fetch(`${API_BASE_URL}/api/conversations/${currentConversation.id}/chat/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: streamingAbortController.signal,
             body: JSON.stringify({
                 query: query,
                 temperature: 0.7,
                 max_tokens: 2048,
                 max_history_turns: maxHistoryTurns,
-                use_hybrid_retrieval: useHybridRetrieval
+                use_hybrid_retrieval: useHybridRetrieval,
+                enable_deep_thinking: enableDeepThinking
             })
         });
         
@@ -826,8 +1029,9 @@ async function sendChatRequestStream(query, thinkingId) {
                         // 提取并渲染知识图谱
                         const graphData = extractGraphDataFromResponse(sourcesData);
                         if (graphData) {
-                            renderKnowledgeGraph(graphData);
                             autoShowGraphPanelIfNeeded(sourcesData);
+                            renderKnowledgeGraph(graphData);
+                            saveLastGraphSnapshot(sourcesData, chunkData.diagnostics || null);
                         }
                         renderGraphDiagnostics(chunkData.diagnostics || null);
                         
@@ -839,6 +1043,10 @@ async function sendChatRequestStream(query, thinkingId) {
                         if (sourcesData.length > 0) {
                             displaySourcesInMessage(messageId, sourcesData);
                         }
+
+                        streamDraft.sources = sourcesData;
+                        streamDraft.updatedAt = new Date().toISOString();
+                        saveStreamDraft(streamDraft);
                     } 
                     else if (chunkType === 'text') {
                         // 接收到文本片段
@@ -849,6 +1057,10 @@ async function sendChatRequestStream(query, thinkingId) {
                         
                         collectedText += chunkData;
                         appendTextToMessage(messageId, chunkData);
+
+                        streamDraft.answer = collectedText;
+                        streamDraft.updatedAt = new Date().toISOString();
+                        scheduleSaveStreamDraft(streamDraft);
                     } 
                     else if (chunkType === 'done') {
                         // 生成完成
@@ -858,6 +1070,7 @@ async function sendChatRequestStream(query, thinkingId) {
                         
                         // 更新对话列表
                         await loadConversations(currentAssistant.id);
+                        clearStreamDraft(conversationId);
                         break;
                     } 
                     else if (chunkType === 'error') {
@@ -872,10 +1085,33 @@ async function sendChatRequestStream(query, thinkingId) {
         
     } catch (error) {
         document.getElementById(thinkingId)?.remove();
+
+        if (error?.name === 'AbortError') {
+            if (messageId && collectedText) {
+                finalizeMessage(messageId, collectedText, { interrupted: true });
+                streamDraft.answer = collectedText;
+                streamDraft.status = 'interrupted';
+                streamDraft.updatedAt = new Date().toISOString();
+                saveStreamDraft(streamDraft);
+                showMessage('已暂停生成，返回此会话可继续查看已接收内容', 'warning');
+                return;
+            }
+            clearStreamDraft(conversationId);
+            return;
+        }
+
         if (messageId) {
             document.getElementById(messageId)?.remove();
         }
+        clearStreamDraft(conversationId);
         throw error;
+    } finally {
+        isStreamingResponse = false;
+        streamingAbortController = null;
+        if (streamDraftSaveTimer) {
+            clearTimeout(streamDraftSaveTimer);
+            streamDraftSaveTimer = null;
+        }
     }
 }
 
@@ -903,7 +1139,7 @@ function appendAIMessagePlaceholder() {
     `;
     
     container.insertAdjacentHTML('beforeend', messageHtml);
-    scrollToBottom();
+    scrollToBottom({ force: true });
     
     return messageId;
 }
@@ -950,7 +1186,7 @@ function displaySourcesInMessage(messageId, sources) {
             ${sources.map((src, i) => `
                 <span class="source-tag" title="${escapeHtml(src.content || '')}">
                     <i class="fa fa-file-text-o"></i>
-                    来源${i + 1} (${(src.similarity * 100).toFixed(1)}%)
+                    来源${i + 1} (${getSourcePercent(src)}%)
                 </span>
             `).join('')}
         </div>
@@ -960,7 +1196,7 @@ function displaySourcesInMessage(messageId, sources) {
 }
 
 // 完成消息（渲染Markdown）
-function finalizeMessage(messageId, fullText) {
+function finalizeMessage(messageId, fullText, options = {}) {
     const messageEl = document.getElementById(messageId);
     if (!messageEl) return;
     
@@ -974,6 +1210,14 @@ function finalizeMessage(messageId, fullText) {
     contentEl.querySelectorAll('pre code').forEach(block => {
         hljs.highlightElement(block);
     });
+
+    if (options.interrupted) {
+        const timeEl = messageEl.querySelector('.text-xs.text-gray-400.mt-2');
+        if (timeEl) {
+            timeEl.textContent += ' · 未完成';
+            timeEl.classList.add('text-amber-500');
+        }
+    }
     
     scrollToBottom();
 }
@@ -989,7 +1233,7 @@ function appendAssistantMessage(content, sources = []) {
                 ${sources.map((src, i) => `
                     <span class="source-tag" title="${escapeHtml(src.content || '')}">
                         <i class="fa fa-file-text-o"></i>
-                        来源${i + 1} (${(src.similarity * 100).toFixed(1)}%)
+                        来源${i + 1} (${getSourcePercent(src)}%)
                     </span>
                 `).join('')}
             </div>
@@ -1023,7 +1267,7 @@ function appendAssistantMessage(content, sources = []) {
         });
     }
     
-    scrollToBottom();
+    scrollToBottom({ force: true });
 }
 
 // ==================== 工具函数 ====================
@@ -1081,9 +1325,140 @@ function formatTime(isoString) {
     return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
 }
 
-function scrollToBottom() {
+function bindMessagesScrollBehavior() {
+    const container = document.getElementById('messagesContainer');
+    if (!container) return;
+
+    container.addEventListener('scroll', () => {
+        autoScrollEnabled = isNearBottom(container);
+    });
+}
+
+function isNearBottom(container, threshold = AUTO_SCROLL_THRESHOLD_PX) {
+    if (!container) return true;
+    const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distance <= threshold;
+}
+
+function getStreamDraftKey(conversationId) {
+    return `${STREAM_DRAFT_PREFIX}:${conversationId}`;
+}
+
+function saveStreamDraft(draft) {
+    if (!draft?.conversationId) return;
+    try {
+        localStorage.setItem(getStreamDraftKey(draft.conversationId), JSON.stringify(draft));
+    } catch (e) {
+        console.warn('保存流式草稿失败:', e);
+    }
+}
+
+function scheduleSaveStreamDraft(draft) {
+    if (streamDraftSaveTimer) {
+        clearTimeout(streamDraftSaveTimer);
+    }
+    streamDraftSaveTimer = setTimeout(() => {
+        saveStreamDraft(draft);
+        streamDraftSaveTimer = null;
+    }, 250);
+}
+
+function readStreamDraft(conversationId) {
+    if (!conversationId) return null;
+    try {
+        const raw = localStorage.getItem(getStreamDraftKey(conversationId));
+        if (!raw) return null;
+        const draft = JSON.parse(raw);
+        if (!draft?.updatedAt) return null;
+
+        // 超过24小时的草稿自动清理
+        const ageMs = Date.now() - new Date(draft.updatedAt).getTime();
+        if (Number.isFinite(ageMs) && ageMs > 24 * 60 * 60 * 1000) {
+            clearStreamDraft(conversationId);
+            return null;
+        }
+
+        return draft;
+    } catch (e) {
+        console.warn('读取流式草稿失败:', e);
+        return null;
+    }
+}
+
+function clearStreamDraft(conversationId) {
+    if (!conversationId) return;
+    try {
+        localStorage.removeItem(getStreamDraftKey(conversationId));
+    } catch (e) {
+        console.warn('清理流式草稿失败:', e);
+    }
+}
+
+function restoreStreamDraftForConversation(conversationId) {
+    const draft = readStreamDraft(conversationId);
+    if (!draft || !draft.answer) return;
+
+    const container = document.getElementById('messagesContainer');
+    if (!container) return;
+    if (container.querySelector(`[data-stream-draft-for="${conversationId}"]`)) return;
+
+    const welcome = document.getElementById('welcomeMessage');
+    if (welcome) welcome.style.display = 'none';
+
+    const time = formatTime(draft.updatedAt);
+    const hint = draft.status === 'interrupted' ? '上次回复未完成（已恢复）' : '上次回复恢复';
+
+    const messageHtml = `
+        <div class="flex justify-start" data-stream-draft-for="${conversationId}">
+            <div class="message-assistant border border-amber-200">
+                <div class="flex items-center space-x-2 mb-2">
+                    <i class="fa fa-robot text-primary"></i>
+                    <span class="text-xs font-medium text-gray-500">AI助手</span>
+                    <span class="text-xs text-amber-600">${hint}</span>
+                </div>
+                <div class="markdown-content">${escapeHtml(draft.answer)}</div>
+                <div class="sources-container"></div>
+                <div class="text-xs text-gray-400 mt-2">${time}</div>
+            </div>
+        </div>
+    `;
+
+    container.insertAdjacentHTML('beforeend', messageHtml);
+    const draftEl = container.lastElementChild;
+    const contentEl = draftEl?.querySelector('.markdown-content');
+    if (contentEl) {
+        try {
+            contentEl.innerHTML = marked.parse(draft.answer);
+            contentEl.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+        } catch {
+            contentEl.textContent = draft.answer;
+        }
+    }
+
+    if (Array.isArray(draft.sources) && draft.sources.length > 0) {
+        const sourcesContainer = draftEl?.querySelector('.sources-container');
+        if (sourcesContainer) {
+            sourcesContainer.innerHTML = `
+                <div class="flex flex-wrap gap-2 mt-2">
+                    ${draft.sources.map((src, i) => `
+                        <span class="source-tag" title="${escapeHtml(src.content || '')}">
+                            <i class="fa fa-file-text-o"></i>
+                            来源${i + 1} (${getSourcePercent(src)}%)
+                        </span>
+                    `).join('')}
+                </div>
+            `;
+        }
+    }
+}
+
+function scrollToBottom(options = {}) {
+    const { force = false } = options;
     const container = document.getElementById('messagesContainer');
     if (container) {
+        if (!force && !autoScrollEnabled) {
+            return;
+        }
         setTimeout(() => {
             container.scrollTop = container.scrollHeight;
         }, 100);

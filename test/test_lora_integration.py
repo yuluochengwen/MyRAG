@@ -263,14 +263,14 @@ async def client():
 # 运行测试的说明
 """
 运行所有测试：
-    pytest Backend/tests/test_lora_integration.py -v
+    pytest test/test_lora_integration.py -v
 
 运行快速测试（跳过慢速测试）：
-    pytest Backend/tests/test_lora_integration.py -v -m "not slow"
+    pytest test/test_lora_integration.py -v -m "not slow"
 
 运行特定测试类：
-    pytest Backend/tests/test_lora_integration.py::TestDatasetValidator -v
+    pytest test/test_lora_integration.py::TestDatasetValidator -v
 
 生成覆盖率报告：
-    pytest Backend/tests/test_lora_integration.py --cov=app.services --cov-report=html
+    pytest test/test_lora_integration.py --cov=app.services --cov-report=html
 """

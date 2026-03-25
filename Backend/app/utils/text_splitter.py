@@ -1,4 +1,5 @@
 """基于 LangChain 的智能文本分割工具"""
+import re
 from typing import List, Optional, Dict, Any
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from app.core.config import settings
@@ -36,10 +37,16 @@ class TextSplitter:
             document_type: 文档类型（pdf/docx/html/code/text），用于优化分隔符
         """
         config = settings.text_processing
-        
-        self.chunk_size = chunk_size or config.chunk_size
-        self.chunk_overlap = chunk_overlap or config.chunk_overlap
+        profile_map = getattr(config, 'split_profiles', {}) or {}
+        profile = profile_map.get(document_type or 'text', {}) if isinstance(profile_map, dict) else {}
+
+        self.chunk_size = chunk_size or int(profile.get('chunk_size', config.chunk_size))
+        self.chunk_overlap = chunk_overlap or int(profile.get('chunk_overlap', config.chunk_overlap))
+        if self.chunk_overlap >= self.chunk_size:
+            self.chunk_overlap = max(0, self.chunk_size // 5)
         self.document_type = document_type
+        self.hard_sentence_split_enabled = bool(getattr(config, 'hard_sentence_split_enabled', True))
+        self.hard_sentence_max_length = max(80, int(getattr(config, 'hard_sentence_max_length', 280) or 280))
         
         # 根据文档类型选择分隔符
         if separators:
@@ -63,6 +70,15 @@ class TextSplitter:
         """
         # 默认分隔符（适用于普通文本和已优化的PDF/DOCX）
         default_separators = [
+            "\n# ",
+            "\n## ",
+            "\n### ",
+            "\n#### ",
+            "\n- ",
+            "\n* ",
+            "\n1. ",
+            "\n|",      # Markdown表格
+            "\n---",    # 分割线
             "\n\n",   # 双换行（段落） - 最高优先级
             "\n",     # 单换行（行）
             "。",      # 中文句号
@@ -85,8 +101,41 @@ class TextSplitter:
                 "\n\nclass ",     # 类定义
                 "\n\ndef ",       # 函数定义
                 "\n\nasync def ", # 异步函数
+                "\n\nfunc ",      # Go函数
+                "\n\nSELECT ",    # SQL语句
+                "\n\nINSERT ",
+                "\n\nUPDATE ",
+                "\n\nDELETE ",
                 "\n\n",           # 空行
                 "\n",
+                " ",
+                ""
+            ]
+        elif doc_type == 'markdown':
+            return [
+                "\n# ",
+                "\n## ",
+                "\n### ",
+                "\n#### ",
+                "\n- ",
+                "\n* ",
+                "\n1. ",
+                "\n|",
+                "\n\n",
+                "\n",
+                "。",
+                ". ",
+                " ",
+                ""
+            ]
+        elif doc_type == 'json':
+            return [
+                "\n\n",
+                "\n",
+                "},",
+                "],",
+                ",\"",
+                ",",
                 " ",
                 ""
             ]
@@ -103,6 +152,78 @@ class TextSplitter:
         else:
             # 默认（包括PDF/DOCX/TEXT）
             return default_separators
+
+    def _normalize_text(self, text: str) -> str:
+        """预清洗文本，减少噪声分块。"""
+        if not text:
+            return ""
+
+        normalized = text.replace('\r\n', '\n').replace('\r', '\n')
+        normalized = normalized.replace('\u00a0', ' ')
+        normalized = re.sub(r"[\t\f\v]+", " ", normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        normalized = re.sub(r"[ ]{2,}", " ", normalized)
+        return normalized.strip()
+
+    def _hard_split_long_sentences(self, text: str) -> str:
+        """对异常超长句进行硬切，降低单块语义混杂。
+        
+        使用 regex finditer 定位标点位置批量切分，避免逐字符遍历的 O(n²) 拼接开销。
+        策略：优先在标点处切分；若连续 max_length 内无标点则强制定长切。
+        """
+        if not text or not self.hard_sentence_split_enabled:
+            return text
+
+        max_len = self.hard_sentence_max_length
+        lines = text.split('\n')
+        processed_lines: List[str] = []
+        punct_re = re.compile(r'[。！？!?；;,.，]')
+
+        for line in lines:
+            current = line.strip()
+            if len(current) <= max_len:
+                processed_lines.append(current)
+                continue
+
+            # 收集所有标点位置（作为候选切分点）
+            punct_positions = [m.end() for m in punct_re.finditer(current)]
+
+            if punct_positions:
+                segments: List[str] = []
+                seg_start = 0
+                last_punct = 0
+
+                for pos in punct_positions:
+                    if pos - seg_start >= max_len:
+                        # 在上一个标点处切分；如果上一个标点就是起点则在当前标点切
+                        cut = last_punct if last_punct > seg_start else pos
+                        segment = current[seg_start:cut].strip()
+                        if segment:
+                            segments.append(segment)
+                        seg_start = cut
+                    last_punct = pos
+
+                # 处理剩余部分
+                remainder = current[seg_start:].strip()
+                if remainder:
+                    if len(remainder) <= max_len * 1.3:
+                        segments.append(remainder)
+                    else:
+                        # 剩余部分仍然超长，定长切
+                        for i in range(0, len(remainder), max_len):
+                            piece = remainder[i:i + max_len].strip()
+                            if piece:
+                                segments.append(piece)
+
+                processed_lines.extend(segments)
+            else:
+                # 无标点，定长硬切
+                for i in range(0, len(current), max_len):
+                    piece = current[i:i + max_len].strip()
+                    if piece:
+                        processed_lines.append(piece)
+
+        return "\n".join(processed_lines)
     
     def split_text(self, text: str, add_metadata: bool = False) -> List[str]:
         """
@@ -115,6 +236,9 @@ class TextSplitter:
         Returns:
             分割后的文本块列表
         """
+        text = self._normalize_text(text)
+        text = self._hard_split_long_sentences(text)
+
         if not text or len(text) == 0:
             return []
         
@@ -134,6 +258,7 @@ class TextSplitter:
             
             # 使用 LangChain 的智能分割
             chunks = splitter.split_text(text)
+            chunks = [chunk.strip() for chunk in chunks if chunk and chunk.strip()]
             
             logger.info(f"文本分割完成: 原文本长度={len(text)}, 块数={len(chunks)}, "
                        f"平均块大小={sum(len(c) for c in chunks) / len(chunks):.0f}")
@@ -195,7 +320,9 @@ class TextSplitter:
             分割后的文本块列表
         """
         chunks = []
-        step = self.chunk_size - self.chunk_overlap
+        text = self._normalize_text(text)
+        text = self._hard_split_long_sentences(text)
+        step = max(1, self.chunk_size - self.chunk_overlap)
         
         for i in range(0, len(text), step):
             chunk = text[i:i + self.chunk_size]

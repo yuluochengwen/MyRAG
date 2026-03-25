@@ -113,7 +113,8 @@ class VectorStoreService:
         query_embeddings: List[List[float]],
         n_results: int = 5,
         where: Optional[Dict[str, Any]] = None,
-        where_document: Optional[Dict[str, Any]] = None
+        where_document: Optional[Dict[str, Any]] = None,
+        include: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         搜索相似向量
@@ -124,19 +125,24 @@ class VectorStoreService:
             n_results: 返回结果数量
             where: 元数据过滤条件
             where_document: 文档过滤条件
+            include: 返回字段控制（如 embeddings）
             
         Returns:
             搜索结果
         """
         try:
             collection = self.get_or_create_collection(collection_name)
-            
-            results = collection.query(
-                query_embeddings=query_embeddings,
-                n_results=n_results,
-                where=where,
-                where_document=where_document
-            )
+
+            query_kwargs = {
+                "query_embeddings": query_embeddings,
+                "n_results": n_results,
+                "where": where,
+                "where_document": where_document,
+            }
+            if include is not None:
+                query_kwargs["include"] = include
+
+            results = collection.query(**query_kwargs)
             
             logger.info(f"向量搜索完成: collection={collection_name}, "
                        f"queries={len(query_embeddings)}, n_results={n_results}")

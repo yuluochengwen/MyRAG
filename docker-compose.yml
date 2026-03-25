@@ -15,7 +15,7 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./Backend/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./scripts/db/init.sql:/docker-entrypoint-initdb.d/init.sql
     command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     networks:
       - myrag-network

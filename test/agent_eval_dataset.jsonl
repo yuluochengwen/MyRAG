@@ -1,0 +1,30 @@
+{"id": 1, "category": "fact", "query": "现在几点了？"}
+{"id": 2, "category": "fact", "query": "请告诉我今天是星期几，并给出当前日期。"}
+{"id": 3, "category": "fact", "query": "你当前回答时使用的时区时间是什么格式？"}
+{"id": 4, "category": "fact", "query": "请给出当前时间，并写成 YYYY-MM-DD HH:mm:ss 格式。"}
+{"id": 5, "category": "fact", "query": "请先获取当前时间，再说明这是24小时制还是12小时制。"}
+{"id": 6, "category": "fact", "query": "我想确认服务器时间，请返回当前时间。"}
+{"id": 7, "category": "fact", "query": "请返回现在的日期、小时和分钟。"}
+{"id": 8, "category": "fact", "query": "请告诉我当前时间，并简单解释你是如何得到的。"}
+{"id": 9, "category": "fact", "query": "现在是几月几号几时几分？"}
+{"id": 10, "category": "fact", "query": "请查询当前时间，结果保留到秒。"}
+{"id": 11, "category": "math", "query": "计算 2+3*4。"}
+{"id": 12, "category": "math", "query": "计算 (123+456)*7。"}
+{"id": 13, "category": "math", "query": "计算 99*99。"}
+{"id": 14, "category": "math", "query": "计算 1024/8+17。"}
+{"id": 15, "category": "math", "query": "计算 (18-5)*(6+4)。"}
+{"id": 16, "category": "math", "query": "请计算 10+20*3，并给出最终数值。"}
+{"id": 17, "category": "math", "query": "计算 (88+12)/(5)。"}
+{"id": 18, "category": "math", "query": "计算 7*8+9*6。"}
+{"id": 19, "category": "math", "query": "计算 (300-45)*2。"}
+{"id": 20, "category": "math", "query": "计算 1000/(4+1)。"}
+{"id": 21, "category": "kb", "query": "搜索知识库中关于 RAG 的内容并总结。"}
+{"id": 22, "category": "kb", "query": "请在知识库中查找与 Agent 工作流程相关的信息。"}
+{"id": 23, "category": "kb", "query": "搜索知识库里关于文本切分参数的说明。"}
+{"id": 24, "category": "kb", "query": "请从知识库中查找与向量检索优化有关的内容。"}
+{"id": 25, "category": "kb", "query": "请检索知识库中有关混合检索的介绍。"}
+{"id": 26, "category": "kb", "query": "请搜索知识库里关于知识图谱构建的步骤。"}
+{"id": 27, "category": "kb", "query": "请在知识库中查找关于Neo4j使用方式的描述。"}
+{"id": 28, "category": "kb", "query": "请检索知识库里对会话管理机制的说明。"}
+{"id": 29, "category": "kb", "query": "请在知识库中寻找与模型管理页面相关的内容。"}
+{"id": 30, "category": "kb", "query": "搜索知识库，给出与系统架构相关的核心要点。"}

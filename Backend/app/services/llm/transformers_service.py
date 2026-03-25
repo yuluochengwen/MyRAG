@@ -12,13 +12,23 @@ import torch
 import accelerate  # 显式导入accelerate
 from transformers import (
     AutoModelForCausalLM, 
+    AutoModelForImageTextToText,
+    AutoProcessor,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TextIteratorStreamer
+    TextIteratorStreamer,
+    __version__ as transformers_version
 )
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+from transformers.models.auto import modeling_auto
 from threading import Thread
 from app.core.config import settings
 from app.utils.logger import logger
+
+
+MODEL_FOR_CAUSAL_LM_MAPPING_NAMES = getattr(modeling_auto, "MODEL_FOR_CAUSAL_LM_MAPPING_NAMES", {})
+MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES = getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {})
+MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES = getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {})
 
 
 class TransformersService:
@@ -27,7 +37,9 @@ class TransformersService:
     def __init__(self):
         self.current_model = None
         self.current_tokenizer = None
+        self.current_processor = None
         self.current_model_name = None
+        self.current_model_loader = "causal_lm"
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.models_dir = Path(settings.llm.local_models_dir) / "LLM"
         
@@ -153,6 +165,181 @@ class TransformersService:
             messages.insert(0, {"role": "system", "content": instruction})
         
         return messages
+
+    def _read_model_meta(self, model_path: Path) -> Dict[str, Any]:
+        config_file = model_path / "config.json"
+        if not config_file.exists():
+            raise FileNotFoundError(f"模型目录缺少 config.json: {config_file}")
+        with open(config_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _resolve_model_path(self, model_name: str) -> Optional[Path]:
+        """将模型名解析为实际可加载目录（兼容 HuggingFace cache 目录结构）。"""
+        if not model_name:
+            return None
+
+        normalized = model_name.replace("\\", "/").strip("/")
+
+        # 1) 直接目录（兼容传入相对路径）
+        direct_path = self.models_dir / normalized
+        if direct_path.exists() and (direct_path / "config.json").exists():
+            return direct_path
+
+        # 2) HuggingFace cache 目录: models--org--repo
+        cache_dir_name = f"models--{normalized.replace('/', '--')}"
+        cache_dir = self.models_dir / cache_dir_name
+        if cache_dir.exists() and cache_dir.is_dir():
+            snapshots_dir = cache_dir / "snapshots"
+            if snapshots_dir.exists() and snapshots_dir.is_dir():
+                snapshot_dirs = [d for d in snapshots_dir.iterdir() if d.is_dir()]
+                snapshot_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                for snapshot_dir in snapshot_dirs:
+                    if (snapshot_dir / "config.json").exists():
+                        return snapshot_dir
+            if (cache_dir / "config.json").exists():
+                return cache_dir
+
+        # 3) 传入了 cache 目录名本身
+        raw_cache_dir = self.models_dir / normalized
+        if raw_cache_dir.exists() and raw_cache_dir.is_dir():
+            snapshots_dir = raw_cache_dir / "snapshots"
+            if snapshots_dir.exists() and snapshots_dir.is_dir():
+                snapshot_dirs = [d for d in snapshots_dir.iterdir() if d.is_dir()]
+                snapshot_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                for snapshot_dir in snapshot_dirs:
+                    if (snapshot_dir / "config.json").exists():
+                        return snapshot_dir
+            if (raw_cache_dir / "config.json").exists():
+                return raw_cache_dir
+
+        return None
+
+    def _resolve_model_loader(self, model_meta: Dict[str, Any]) -> str:
+        model_type = str(model_meta.get("model_type") or "").strip()
+        architectures = model_meta.get("architectures") or []
+        auto_map = model_meta.get("auto_map") or {}
+
+        if any("ForConditionalGeneration" in str(a) for a in architectures):
+            return "image_text"
+        if any("ForCausalLM" in str(a) for a in architectures):
+            return "causal_lm"
+
+        if isinstance(auto_map, dict):
+            if auto_map.get("AutoModelForImageTextToText") or auto_map.get("AutoModelForVision2Seq"):
+                return "image_text"
+            if auto_map.get("AutoModelForCausalLM"):
+                return "causal_lm"
+
+        if model_type in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.keys() or model_type in MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.keys():
+            return "image_text"
+        return "causal_lm"
+
+    def _validate_model_compatibility(self, model_path: Path, model_meta: Dict[str, Any], loader_kind: str) -> Optional[str]:
+        """
+        检查模型与当前加载器的兼容性。
+
+        Returns:
+            Optional[str]: 不兼容原因（可直接用于报错），兼容则返回 None
+        """
+        model_type = str(model_meta.get("model_type") or "").strip()
+        architectures = model_meta.get("architectures") or []
+        auto_map = model_meta.get("auto_map") or {}
+        target_transformers = str(model_meta.get("transformers_version") or "unknown")
+        arch_name = str(architectures[0]) if architectures else "unknown"
+
+        # 配置层支持检查：model_type 是否被当前 transformers 识别
+        # 若存在 auto_map 且提供 AutoConfig，可通过 trust_remote_code 走动态配置加载
+        has_auto_config = isinstance(auto_map, dict) and bool(auto_map.get("AutoConfig"))
+        if model_type and model_type not in CONFIG_MAPPING.keys() and not has_auto_config:
+            return (
+                f"模型类型不受当前 Transformers 支持: model_type={model_type}, "
+                f"当前Transformers={transformers_version}, 模型期望版本={target_transformers}. "
+                "这不是路径错误。请升级Transformers或改用受支持的本地模型。"
+            )
+
+        if loader_kind == "causal_lm":
+            has_auto_causal = isinstance(auto_map, dict) and bool(auto_map.get("AutoModelForCausalLM"))
+            if model_type and model_type not in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.keys() and not has_auto_causal:
+                return (
+                    f"模型类型不在 AutoModelForCausalLM 支持列表中: model_type={model_type}, architecture={arch_name}. "
+                    "请改用文本对话模型（如 Qwen2/Qwen3 CausalLM）或切换到支持该架构的加载方式。"
+                )
+        elif loader_kind == "image_text":
+            has_auto_image_text = isinstance(auto_map, dict) and (
+                bool(auto_map.get("AutoModelForImageTextToText"))
+                or bool(auto_map.get("AutoModelForVision2Seq"))
+            )
+            if (
+                model_type
+                and model_type not in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.keys()
+                and model_type not in MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.keys()
+                and not has_auto_image_text
+            ):
+                return (
+                    f"模型类型不在 ImageText/Vision2Seq 支持列表中: model_type={model_type}, architecture={arch_name}. "
+                    "该模型需要更新版 Transformers 或模型目录中提供 auto_map 远程代码入口。"
+                )
+
+        return None
+
+    def _get_chat_template_tokenizer(self):
+        if self.current_tokenizer is not None:
+            return self.current_tokenizer
+        if self.current_processor is not None and hasattr(self.current_processor, "tokenizer"):
+            return self.current_processor.tokenizer
+        return None
+
+    def _prepare_model_inputs(self, messages: List[Dict[str, str]], max_length: int = 4096) -> Dict[str, torch.Tensor]:
+        prompt = self._build_prompt(messages)
+        tokenizer = self._get_chat_template_tokenizer()
+
+        if self.current_model_loader == "image_text" and self.current_processor is not None:
+            logger.info(f"开始编码输入(image_text)，prompt长度: {len(prompt)}")
+            try:
+                return self.current_processor(
+                    text=prompt,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=max_length
+                )
+            except TypeError:
+                return self.current_processor(text=prompt, return_tensors="pt")
+
+        if tokenizer is None:
+            raise RuntimeError("当前模型缺少 tokenizer/processor，无法编码输入")
+
+        logger.info(f"开始编码输入(causal_lm)，prompt长度: {len(prompt)}")
+        return tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_length
+        )
+
+    def _move_inputs_to_model_device(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        if hasattr(self.current_model, 'hf_device_map') and self.current_model.hf_device_map:
+            first_device = list(self.current_model.hf_device_map.values())[0]
+            moved = {k: v.to(first_device) for k, v in inputs.items()}
+            logger.info(f"device_map模式: 移动输入到主设备 {first_device}")
+            return moved
+        if self.device == "cuda":
+            moved = {k: v.to("cuda:0") for k, v in inputs.items()}
+            logger.info("CUDA模式: 移动输入到cuda:0")
+            return moved
+        logger.info("CPU模式: 保持输入在CPU")
+        return inputs
+
+    def _decode_generated_text(self, output_ids: Any, inputs: Dict[str, torch.Tensor], model_name: str) -> str:
+        tokenizer = self._get_chat_template_tokenizer()
+        if tokenizer is None:
+            raise RuntimeError("当前模型缺少 tokenizer，无法解码输出")
+
+        input_length = inputs['input_ids'].shape[1] if 'input_ids' in inputs else 0
+        response = tokenizer.decode(
+            output_ids[0][input_length:],
+            skip_special_tokens=True
+        )
+        return self._post_process_response(response, model_name)
     
     async def load_model(self, model_name: str, quantize: bool = True) -> bool:
         """
@@ -166,12 +353,23 @@ class TransformersService:
             bool: 加载成功返回True
         """
         try:
-            model_path = self.models_dir / model_name
+            model_path = self._resolve_model_path(model_name)
             
-            if not model_path.exists():
-                raise FileNotFoundError(f"模型不存在: {model_path}")
+            if model_path is None:
+                raise FileNotFoundError(
+                    f"模型不存在: {self.models_dir / model_name}"
+                )
+
+            model_meta = self._read_model_meta(model_path)
+            loader_kind = self._resolve_model_loader(model_meta)
+
+            compatibility_error = self._validate_model_compatibility(model_path, model_meta, loader_kind)
+            if compatibility_error:
+                raise ValueError(
+                    f"模型兼容性检查失败: {compatibility_error} (loader={loader_kind}, model={model_name}, path={model_path})"
+                )
             
-            logger.info(f"开始加载模型: {model_name}")
+            logger.info(f"开始加载模型: {model_name} (resolved_path={model_path})")
             logger.info(f"量化模式: {'INT4' if quantize else '无'}")
             
             # 如果已加载相同模型,跳过
@@ -183,24 +381,38 @@ class TransformersService:
             if self.current_model is not None:
                 logger.info(f"卸载旧模型: {self.current_model_name}")
                 del self.current_model
-                del self.current_tokenizer
+                if self.current_tokenizer is not None:
+                    del self.current_tokenizer
+                if self.current_processor is not None:
+                    del self.current_processor
                 torch.cuda.empty_cache()
+                self.current_tokenizer = None
+                self.current_processor = None
             
-            # 加载tokenizer
-            logger.info("加载Tokenizer...")
-            try:
-                self.current_tokenizer = AutoTokenizer.from_pretrained(
+            # 加载tokenizer/processor
+            if loader_kind == "image_text":
+                logger.info("加载Processor...")
+                self.current_processor = AutoProcessor.from_pretrained(
                     str(model_path),
-                    trust_remote_code=True,
-                    use_fast=True  # 优先使用fast tokenizer
+                    trust_remote_code=True
                 )
-            except Exception as e:
-                logger.warning(f"Fast tokenizer加载失败: {e}，尝试slow tokenizer")
-                self.current_tokenizer = AutoTokenizer.from_pretrained(
-                    str(model_path),
-                    trust_remote_code=True,
-                    use_fast=False
-                )
+                if hasattr(self.current_processor, "tokenizer"):
+                    self.current_tokenizer = self.current_processor.tokenizer
+            else:
+                logger.info("加载Tokenizer...")
+                try:
+                    self.current_tokenizer = AutoTokenizer.from_pretrained(
+                        str(model_path),
+                        trust_remote_code=True,
+                        use_fast=True  # 优先使用fast tokenizer
+                    )
+                except Exception as e:
+                    logger.warning(f"Fast tokenizer加载失败: {e}，尝试slow tokenizer")
+                    self.current_tokenizer = AutoTokenizer.from_pretrained(
+                        str(model_path),
+                        trust_remote_code=True,
+                        use_fast=False
+                    )
             
             # 加载模型
             logger.info("加载模型权重...")
@@ -243,12 +455,16 @@ class TransformersService:
                 before_reserved = torch.cuda.memory_reserved(0) / 1024**3
                 logger.info(f"加载前显存: {before_allocated:.2f}GB 已分配, {before_reserved:.2f}GB 已保留")
             
-            self.current_model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
+            if loader_kind == "image_text":
+                self.current_model = AutoModelForImageTextToText.from_pretrained(**load_kwargs)
+            else:
+                self.current_model = AutoModelForCausalLM.from_pretrained(**load_kwargs)
             
             # 设置为评估模式
             self.current_model.eval()
             
             self.current_model_name = model_name
+            self.current_model_loader = loader_kind
             
             # 显示显存使用（加载后）
             if self.device == "cuda":
@@ -264,14 +480,16 @@ class TransformersService:
                 utilization = (after_allocated / total_memory) * 100
                 logger.info(f"显存利用率: {utilization:.1f}% ({after_allocated:.2f}GB / {total_memory:.1f}GB)")
             
-            logger.info(f"模型{model_name}加载成功")
+            logger.info(f"模型{model_name}加载成功，loader={loader_kind}")
             return True
             
         except Exception as e:
             logger.error(f"加载模型失败: {e}", exc_info=True)
             self.current_model = None
             self.current_tokenizer = None
+            self.current_processor = None
             self.current_model_name = None
+            self.current_model_loader = "causal_lm"
             return False
     
     async def chat(
@@ -308,32 +526,8 @@ class TransformersService:
                 if not success:
                     raise RuntimeError(f"无法加载模型: {model}")
             
-            # 构建prompt
-            prompt = self._build_prompt(messages)
-            
-            # 编码输入
-            logger.info(f"开始编码输入，prompt长度: {len(prompt)}")
-            inputs = self.current_tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=4096
-            )
-            
-            # 当使用device_map="auto"时，模型会分布在多个设备上
-            # tokenizer默认输出CPU张量，需要移动到模型的主设备
-            if hasattr(self.current_model, 'hf_device_map') and self.current_model.hf_device_map:
-                # 获取模型的第一个设备（通常是主设备）
-                first_device = list(self.current_model.hf_device_map.values())[0]
-                inputs = {k: v.to(first_device) for k, v in inputs.items()}
-                logger.info(f"device_map模式: 移动输入到主设备 {first_device}, input_ids shape: {inputs['input_ids'].shape}")
-            elif self.device == "cuda":
-                # 没有device_map但在CUDA上，直接移动到cuda:0
-                inputs = {k: v.to("cuda:0") for k, v in inputs.items()}
-                logger.info(f"CUDA模式: 移动输入到cuda:0, input_ids shape: {inputs['input_ids'].shape}")
-            else:
-                # CPU模式，不需要移动
-                logger.info(f"CPU模式: 保持输入在CPU, input_ids shape: {inputs['input_ids'].shape}")
+            inputs = self._prepare_model_inputs(messages, max_length=4096)
+            inputs = self._move_inputs_to_model_device(inputs)
             
             logger.info(f"输入准备完成")
 
@@ -355,8 +549,17 @@ class TransformersService:
             
             try:
                 with torch.no_grad():
-                    # 设置60秒超时(根据max_tokens调整)
-                    timeout = max(60, max_tokens // 10)
+                    # 生成超时: 取配置基线与按token估算的较大值，避免长回答被过早中断
+                    configured_timeout = max(
+                        1,
+                        int(getattr(settings.llm, "transformers_generation_timeout_seconds", 480))
+                    )
+                    assumed_tps = max(
+                        0.1,
+                        float(getattr(settings.llm, "transformers_assumed_tokens_per_second", 5.0))
+                    )
+                    estimated_timeout = max(60, int(max_tokens / assumed_tps))
+                    timeout = max(configured_timeout, estimated_timeout)
                     output_ids = await asyncio.wait_for(
                         loop.run_in_executor(
                             None,
@@ -374,14 +577,7 @@ class TransformersService:
             logger.info("生成完成，开始解码")
             
             # 解码输出（注意：inputs现在是dict）
-            input_length = inputs['input_ids'].shape[1]
-            response = self.current_tokenizer.decode(
-                output_ids[0][input_length:],
-                skip_special_tokens=True
-            )
-            
-            # 后处理：移除思考过程
-            response = self._post_process_response(response, model)
+            response = self._decode_generated_text(output_ids, inputs, model)
             
             # 显存回收
             if self.device == "cuda":
@@ -419,24 +615,8 @@ class TransformersService:
                 if not success:
                     raise RuntimeError(f"无法加载模型: {model}")
             
-            # 构建prompt
-            prompt = self._build_prompt(messages)
-            
-            # 编码输入
-            logger.info(f"开始编码输入，prompt长度: {len(prompt)}")
-            inputs = self.current_tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=4096
-            )
-            
-            # 移动输入到正确的设备
-            if hasattr(self.current_model, 'hf_device_map') and self.current_model.hf_device_map:
-                first_device = list(self.current_model.hf_device_map.values())[0]
-                inputs = {k: v.to(first_device) for k, v in inputs.items()}
-            elif self.device == "cuda":
-                inputs = {k: v.to("cuda:0") for k, v in inputs.items()}
+            inputs = self._prepare_model_inputs(messages, max_length=4096)
+            inputs = self._move_inputs_to_model_device(inputs)
             
             # 生成配置
             generation_config = {
@@ -451,7 +631,7 @@ class TransformersService:
             
             # 创建流式输出器
             streamer = TextIteratorStreamer(
-                self.current_tokenizer,
+                self._get_chat_template_tokenizer(),
                 skip_prompt=True,
                 skip_special_tokens=True
             )
@@ -506,6 +686,8 @@ class TransformersService:
         Returns:
             str: 构建好的 prompt
         """
+        tokenizer = self._get_chat_template_tokenizer()
+
         # 检测模型类型
         is_reasoning_model = (self.current_model_name and 
                              any(k in self.current_model_name.lower() 
@@ -535,9 +717,9 @@ class TransformersService:
             messages = self._inject_system_instruction(messages, instruction)
         
         # 尝试使用 tokenizer 的 chat_template
-        if hasattr(self.current_tokenizer, "apply_chat_template"):
+        if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
             try:
-                return self.current_tokenizer.apply_chat_template(
+                return tokenizer.apply_chat_template(
                     messages,
                     tokenize=False,
                     add_generation_prompt=True
@@ -667,10 +849,15 @@ class TransformersService:
             logger.info(f"卸载模型: {self.current_model_name}")
             
             del self.current_model
-            del self.current_tokenizer
+            if self.current_tokenizer is not None:
+                del self.current_tokenizer
+            if self.current_processor is not None:
+                del self.current_processor
             self.current_model = None
             self.current_tokenizer = None
+            self.current_processor = None
             self.current_model_name = None
+            self.current_model_loader = "causal_lm"
             
             if self.device == "cuda":
                 torch.cuda.empty_cache()

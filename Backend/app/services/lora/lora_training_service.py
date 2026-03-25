@@ -23,8 +23,8 @@ from datasets import Dataset
 
 from app.core.database import DatabaseManager
 from app.models.lora_training_job import LoRATrainingJob
-from app.services.dataset_validator_service import DatasetValidatorService
-from app.services.lora_service import LoRAService
+from app.services.lora.dataset_validator_service import DatasetValidatorService
+from app.services.lora.lora_service import LoRAService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

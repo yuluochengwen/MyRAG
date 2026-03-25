@@ -1,6 +1,8 @@
 """嵌入模型服务"""
+import hashlib
 import os
-from typing import List, Optional, TYPE_CHECKING
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
 from app.core.config import settings
 from app.utils.logger import get_logger
 
@@ -17,7 +19,7 @@ def get_ollama_service():
     """获取Ollama服务实例（延迟导入）"""
     global _ollama_service
     if _ollama_service is None:
-        from app.services.ollama_embedding_service import get_ollama_embedding_service
+        from app.services.embedding.ollama_embedding_service import get_ollama_embedding_service
         _ollama_service = get_ollama_embedding_service()
     return _ollama_service
 
@@ -29,11 +31,56 @@ class EmbeddingService:
         self.models = {}  # 模型缓存
         self.device = self._get_device()
         self.model_dir = settings.embedding.model_dir
+        self.default_batch_size = max(1, int(getattr(settings.embedding, 'batch_size', 32) or 32))
+        self.max_length = max(1, int(getattr(settings.embedding, 'max_length', 512) or 512))
+        self.vector_cache_size = max(0, int(getattr(settings.embedding, 'vector_cache_size', 5000) or 5000))
+        self._vector_cache: OrderedDict[str, List[float]] = OrderedDict()
         
         # 确保模型目录存在
         os.makedirs(self.model_dir, exist_ok=True)
         
-        logger.info(f"嵌入服务初始化: device={self.device}")
+        logger.info(
+            f"嵌入服务初始化: device={self.device}, batch_size={self.default_batch_size}, "
+            f"max_length={self.max_length}, vector_cache_size={self.vector_cache_size}"
+        )
+
+    def _build_cache_key(self, provider: str, model_name: str, text: str) -> str:
+        digest = hashlib.sha1(text.encode('utf-8')).hexdigest()
+        return f"{provider}::{model_name}::{digest}"
+
+    def _needs_e5_prefix(self, model_name: str) -> bool:
+        return bool(getattr(settings.embedding, 'enable_e5_prefix', True)) and 'e5' in (model_name or '').lower()
+
+    def _prepare_texts_for_model(
+        self,
+        texts: List[str],
+        model_name: str,
+        text_role: str
+    ) -> List[str]:
+        if not texts:
+            return []
+
+        if not self._needs_e5_prefix(model_name):
+            return texts
+
+        if text_role == 'query':
+            return [f"query: {text}" for text in texts]
+        return [f"passage: {text}" for text in texts]
+
+    def _cache_get(self, key: str) -> Optional[List[float]]:
+        cached = self._vector_cache.get(key)
+        if cached is None:
+            return None
+        self._vector_cache.move_to_end(key)
+        return cached
+
+    def _cache_set(self, key: str, embedding: List[float]) -> None:
+        if self.vector_cache_size <= 0:
+            return
+        self._vector_cache[key] = embedding
+        self._vector_cache.move_to_end(key)
+        while len(self._vector_cache) > self.vector_cache_size:
+            self._vector_cache.popitem(last=False)
     
     def _get_device(self) -> str:
         """获取可用设备（延迟导入torch）"""
@@ -92,8 +139,9 @@ class EmbeddingService:
         texts: List[str],
         model_name: str,
         provider: str = "transformers",
-        batch_size: int = 32,
-        show_progress: bool = False
+        batch_size: Optional[int] = None,
+        show_progress: bool = False,
+        text_role: str = "document"
     ) -> List[List[float]]:
         """
         将文本编码为向量（支持多provider）
@@ -112,15 +160,21 @@ class EmbeddingService:
             if not texts:
                 return []
             
-            logger.info(f"编码文本: count={len(texts)}, model={model_name}, provider={provider}")
+            effective_batch_size = max(1, int(batch_size or self.default_batch_size))
+
+            logger.info(
+                f"编码文本: count={len(texts)}, model={model_name}, provider={provider}, "
+                f"batch_size={effective_batch_size}"
+            )
             
             # 根据provider路由到不同的实现
             if provider == "ollama":
                 ollama_service = get_ollama_service()
-                return ollama_service.encode(texts, model_name, batch_size, show_progress)
+                return ollama_service.encode(texts, model_name, effective_batch_size, show_progress)
             else:
                 # 默认使用transformers
-                return self._encode_with_transformers(texts, model_name, batch_size, show_progress)
+                prepared_texts = self._prepare_texts_for_model(texts, model_name, text_role)
+                return self._encode_with_transformers(prepared_texts, model_name, effective_batch_size, show_progress)
             
         except Exception as e:
             logger.error(f"文本编码失败: {str(e)}")
@@ -145,28 +199,128 @@ class EmbeddingService:
         Returns:
             向量列表（已归一化）
         """
-        import numpy as np
+        import torch
         
         model = self.load_model(model_name)
+        model.max_seq_length = self.max_length
+
+        current_batch_size = max(1, int(batch_size or self.default_batch_size))
+        last_error: Optional[Exception] = None
+
+        while current_batch_size >= 1:
+            try:
+                embeddings = model.encode(
+                    texts,
+                    batch_size=current_batch_size,
+                    show_progress_bar=show_progress,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True
+                )
+                embeddings_list = embeddings.tolist()
+
+                logger.info(
+                    f"Transformers编码完成: vectors={len(embeddings_list)}, "
+                    f"dimension={len(embeddings_list[0]) if embeddings_list else 0}, "
+                    f"batch_size={current_batch_size}, max_seq_length={model.max_seq_length}"
+                )
+
+                return embeddings_list
+
+            except RuntimeError as error:
+                last_error = error
+                error_text = str(error).lower()
+                is_oom = "out of memory" in error_text and "cuda" in error_text
+
+                if is_oom and current_batch_size > 1:
+                    next_batch_size = max(1, current_batch_size // 2)
+                    logger.warning(
+                        "Transformers编码出现CUDA OOM，自动降级batch_size: %s -> %s",
+                        current_batch_size,
+                        next_batch_size
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    current_batch_size = next_batch_size
+                    continue
+
+                raise
         
-        # 编码
-        embeddings = model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=show_progress,
-            convert_to_numpy=True,
-            normalize_embeddings=True  # 强制归一化
-        )
-        
-        # 转换为列表
-        embeddings_list = embeddings.tolist()
-        
-        logger.info(f"Transformers编码完成: vectors={len(embeddings_list)}, "
-                   f"dimension={len(embeddings_list[0]) if embeddings_list else 0}")
-        
-        return embeddings_list
+        if last_error:
+            raise last_error
+        return []
+
+    def encode_with_cache(
+        self,
+        texts: List[str],
+        model_name: str,
+        provider: str = "transformers",
+        batch_size: Optional[int] = None,
+        show_progress: bool = False,
+        text_role: str = "document"
+    ) -> Tuple[List[List[float]], Dict[str, Any]]:
+        """编码文本并复用内存缓存，避免重复向量化。"""
+        if not texts:
+            return [], {
+                "total": 0,
+                "cache_hit": 0,
+                "cache_miss": 0,
+                "unique_miss": 0,
+                "hit_rate": 0.0
+            }
+
+        embeddings: List[Optional[List[float]]] = [None] * len(texts)
+        miss_index_by_key: Dict[str, List[int]] = {}
+        miss_text_by_key: Dict[str, str] = {}
+        cache_hit = 0
+
+        for index, text in enumerate(texts):
+            current_text = text or ""
+            cache_key = self._build_cache_key(provider, model_name, current_text)
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                embeddings[index] = cached
+                cache_hit += 1
+                continue
+
+            miss_index_by_key.setdefault(cache_key, []).append(index)
+            if cache_key not in miss_text_by_key:
+                miss_text_by_key[cache_key] = current_text
+
+        if miss_text_by_key:
+            miss_keys = list(miss_text_by_key.keys())
+            miss_texts = [miss_text_by_key[key] for key in miss_keys]
+            miss_vectors = self.encode(
+                miss_texts,
+                model_name=model_name,
+                provider=provider,
+                batch_size=batch_size,
+                show_progress=show_progress,
+                text_role=text_role
+            )
+
+            for key, vector in zip(miss_keys, miss_vectors):
+                self._cache_set(key, vector)
+                for target_index in miss_index_by_key.get(key, []):
+                    embeddings[target_index] = vector
+
+        resolved_embeddings = [vector or [] for vector in embeddings]
+        cache_miss = len(texts) - cache_hit
+
+        return resolved_embeddings, {
+            "total": len(texts),
+            "cache_hit": cache_hit,
+            "cache_miss": cache_miss,
+            "unique_miss": len(miss_text_by_key),
+            "hit_rate": round(cache_hit / len(texts), 4)
+        }
     
-    def encode_single(self, text: str, model_name: str, provider: str = "transformers") -> List[float]:
+    def encode_single(
+        self,
+        text: str,
+        model_name: str,
+        provider: str = "transformers",
+        text_role: str = "query"
+    ) -> List[float]:
         """
         编码单个文本
         
@@ -178,7 +332,7 @@ class EmbeddingService:
         Returns:
             向量
         """
-        embeddings = self.encode([text], model_name, provider, show_progress=False)
+        embeddings = self.encode([text], model_name, provider, show_progress=False, text_role=text_role)
         return embeddings[0] if embeddings else []
     
     def get_embedding_dimension(self, model_name: str, provider: str = "transformers") -> int:
@@ -263,28 +417,6 @@ class EmbeddingService:
         
         return all_models
     
-    def unload_model(self, model_name: str) -> bool:
-        """
-        卸载模型释放内存
-        
-        Args:
-            model_name: 模型名称
-            
-        Returns:
-            是否成功
-        """
-        if model_name in self.models:
-            del self.models[model_name]
-            
-            # 清理GPU缓存
-            if self.device == 'cuda':
-                torch.cuda.empty_cache()
-            
-            logger.info(f"模型已卸载: {model_name}")
-            return True
-        
-        return False
-    
     def get_model_info(self, model_name: str) -> dict:
         """
         获取模型信息
@@ -326,6 +458,7 @@ class EmbeddingService:
                     logger.info(f"已卸载嵌入模型: {model_name}")
             else:
                 self.models.clear()
+                self._vector_cache.clear()
                 logger.info("已卸载所有嵌入模型")
             
             # 清理GPU缓存

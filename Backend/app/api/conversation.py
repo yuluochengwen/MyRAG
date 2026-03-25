@@ -9,12 +9,39 @@ from app.models.schemas import (
     ConversationCreate, ConversationResponse, ConversationListResponse,
     MessageCreate, ConversationMessageResponse, MessageListResponse
 )
+from app.core.config import settings
 from app.core.database import db_manager
 from app.services.chat_service import ChatService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/conversations", tags=["对话管理"])
+
+
+def _json_default_serializer(obj):
+    """兜底序列化器，避免SSE因特殊类型（如Neo4j DateTime）中断。"""
+    if obj is None:
+        return None
+
+    iso_format = getattr(obj, "isoformat", None)
+    if callable(iso_format):
+        try:
+            return iso_format()
+        except Exception:
+            pass
+
+    neo4j_iso = getattr(obj, "iso_format", None)
+    if callable(neo4j_iso):
+        try:
+            return neo4j_iso()
+        except Exception:
+            pass
+
+    return str(obj)
+
+
+def _safe_json_dumps(payload) -> str:
+    return json.dumps(payload, ensure_ascii=False, default=_json_default_serializer)
 
 
 # ==================== 智能助手聊天请求模型 ====================
@@ -26,6 +53,7 @@ class AssistantChatRequest(BaseModel):
     max_tokens: Optional[int] = 2048
     max_history_turns: Optional[int] = 10  # 最多读取10轮历史对话（20条消息）
     use_hybrid_retrieval: Optional[bool] = False  # 是否使用混合检索（向量+图谱）
+    enable_deep_thinking: Optional[bool] = False  # 深度思考开关（仅本地模型生效）
 
 
 @router.post("", response_model=ConversationResponse)
@@ -379,18 +407,27 @@ async def chat_with_assistant(conversation_id: int, request: AssistantChatReques
             cursor.close()
         
         # 6. 调用聊天服务（传递历史消息和LoRA模型ID）
+        chat_top_k = max(3, int(getattr(settings.hybrid_retrieval, 'chat_top_k', 10) or 10))
+        logger.info(
+            "聊天请求参数: conversation_id=%s, hybrid=%s, deep_thinking=%s, chat_top_k=%s",
+            conversation_id,
+            bool(request.use_hybrid_retrieval),
+            bool(request.enable_deep_thinking),
+            chat_top_k,
+        )
         chat_service = ChatService(db_manager)
         result = await chat_service.chat_with_assistant(
             kb_ids=kb_ids,
             query=request.query,
             history_messages=history_messages,
             system_prompt=assistant['system_prompt'],
-            top_k=5,
+            top_k=chat_top_k,
             llm_model=assistant['llm_model'],
             llm_provider=assistant['llm_provider'],
             lora_model_id=assistant.get('lora_model_id'),
             temperature=request.temperature,
-            use_hybrid_retrieval=request.use_hybrid_retrieval
+            use_hybrid_retrieval=request.use_hybrid_retrieval,
+            enable_deep_thinking=bool(request.enable_deep_thinking)
         )
         
         # 7. 保存AI回复
@@ -473,7 +510,7 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                 result = cursor.fetchone()
                 
                 if not result:
-                    yield f"data: {json.dumps({'type': 'error', 'data': {'error': '对话不存在'}}, ensure_ascii=False)}\n\n"
+                    yield f"data: {_safe_json_dumps({'type': 'error', 'data': {'error': '对话不存在'}})}\n\n"
                     return
                 
                 conv = result
@@ -505,18 +542,27 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                 cursor.close()
             
             # 调用流式聊天服务（传递历史消息和LoRA模型ID）
+            chat_top_k = max(3, int(getattr(settings.hybrid_retrieval, 'chat_top_k', 10) or 10))
+            logger.info(
+                "流式聊天请求参数: conversation_id=%s, hybrid=%s, deep_thinking=%s, chat_top_k=%s",
+                conversation_id,
+                bool(request.use_hybrid_retrieval),
+                bool(request.enable_deep_thinking),
+                chat_top_k,
+            )
             chat_service = ChatService(db_manager)
             async for chunk in chat_service.chat_stream(
                 kb_ids=kb_ids,
                 query=request.query,
                 history_messages=history_messages,
                 system_prompt=conv['system_prompt'],
-                top_k=5,
+                top_k=chat_top_k,
                 llm_model=conv['llm_model'],
                 llm_provider=conv['llm_provider'],
                 lora_model_id=conv.get('lora_model_id'),
                 temperature=request.temperature,
-                use_hybrid_retrieval=request.use_hybrid_retrieval
+                use_hybrid_retrieval=request.use_hybrid_retrieval,
+                enable_deep_thinking=bool(request.enable_deep_thinking)
             ):
                 chunk_type = chunk.get('type')
                 chunk_data = chunk.get('data')
@@ -526,11 +572,11 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                     sources_data = chunk_data.get('sources', [])
                     retrieval_count = chunk_data.get('retrieval_count', 0)
                     embedding_model = chunk_data.get('embedding_model')
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    yield f"data: {_safe_json_dumps(chunk)}\n\n"
                 
                 elif chunk_type == 'text':
                     collected_text += chunk_data
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    yield f"data: {_safe_json_dumps(chunk)}\n\n"
                 
                 elif chunk_type == 'done':
                     # 保存AI回复到数据库
@@ -539,7 +585,7 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                         
                         sources_json = None
                         if sources_data:
-                            sources_json = json.dumps(sources_data, ensure_ascii=False)
+                            sources_json = _safe_json_dumps(sources_data)
                         
                         cursor.execute(
                             """INSERT INTO messages (conversation_id, role, content, sources) 
@@ -557,10 +603,10 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                         )
                         cursor.close()
                     
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    yield f"data: {_safe_json_dumps(chunk)}\n\n"
                 
                 elif chunk_type == 'error':
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    yield f"data: {_safe_json_dumps(chunk)}\n\n"
                     return
         
         except Exception as e:
@@ -569,7 +615,7 @@ async def chat_with_assistant_stream(conversation_id: int, request: AssistantCha
                 "type": "error",
                 "data": {"error": str(e)}
             }
-            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+            yield f"data: {_safe_json_dumps(error_chunk)}\n\n"
     
     return StreamingResponse(
         generate_stream(),

@@ -11,6 +11,15 @@ let wsClient = null;
 // 当前处理中的知识库
 let processingKB = new Set();
 
+// 当前详情中的知识库
+let activeKBId = null;
+let kbGraphSimulation = null;
+let activeKBTab = 'graph';
+let kbFilesLoaded = false;
+let kbChunksLoaded = false;
+let kbCurrentGraphNodes = [];
+let kbCurrentGraphLinks = [];
+
 /**
  * 初始化
  */
@@ -41,6 +50,33 @@ function initWebSocket() {
     
     // 连接
     wsClient.connect();
+}
+
+/**
+ * 确保WebSocket连接可用（上传前调用）
+ */
+async function ensureWebSocketReady(timeoutMs = 5000) {
+    if (!wsClient) {
+        initWebSocket();
+    }
+
+    if (wsClient && wsClient.isConnected()) {
+        return true;
+    }
+
+    if (wsClient) {
+        wsClient.connect();
+    }
+
+    const startAt = Date.now();
+    while (Date.now() - startAt < timeoutMs) {
+        if (wsClient && wsClient.isConnected()) {
+            return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    return false;
 }
 
 /**
@@ -169,6 +205,65 @@ function bindEvents() {
     const searchInput = document.querySelector('input[type="text"][placeholder*="搜索"]');
     if (searchInput) {
         searchInput.addEventListener('input', handleSearch);
+    }
+
+    // 详情弹窗：点击遮罩关闭
+    const detailModal = document.getElementById('kbDetailModal');
+    if (detailModal) {
+        detailModal.addEventListener('click', (e) => {
+            if (e.target === detailModal) {
+                closeKBDetailModal();
+            }
+        });
+    }
+
+    // 详情弹窗：刷新图谱
+    const refreshBtn = document.getElementById('kbGraphRefreshBtn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            if (activeKBId) {
+                loadKBGraphPreview(activeKBId, true);
+            }
+        });
+    }
+
+    // 详情页标签切换
+    const tabsRoot = document.getElementById('kbDetailTabs');
+    if (tabsRoot) {
+        tabsRoot.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-tab]');
+            if (!btn) return;
+            const tab = btn.getAttribute('data-tab');
+            setKBDetailTab(tab);
+        });
+    }
+
+    const filesPanel = document.getElementById('kbFilesPanelContent');
+    if (filesPanel) {
+        filesPanel.addEventListener('click', async (event) => {
+            const actionBtn = event.target.closest('[data-action]');
+            if (!actionBtn || !activeKBId) return;
+
+            const fileId = Number(actionBtn.getAttribute('data-file-id'));
+            const filename = actionBtn.getAttribute('data-filename') || '未命名文件';
+            if (!Number.isFinite(fileId) || fileId <= 0) return;
+
+            const action = actionBtn.getAttribute('data-action');
+            if (action === 'preview-file') {
+                await viewFileContent(activeKBId, fileId, filename);
+                return;
+            }
+            if (action === 'delete-file') {
+                await deleteKBFile(activeKBId, fileId, filename);
+            }
+        });
+    }
+
+    const previewCloseBtn = document.getElementById('kbFilePreviewCloseBtn');
+    if (previewCloseBtn) {
+        previewCloseBtn.addEventListener('click', () => {
+            closeKBFilePreview();
+        });
     }
 }
 
@@ -358,7 +453,7 @@ function renderKnowledgeBases(kbs) {
     // 渲染知识库卡片
     kbs.forEach(kb => {
         const card = document.createElement('div');
-        card.className = 'bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col';
+        card.className = 'bg-white rounded-xl p-6 card-shadow hover:shadow-lg transition-custom flex flex-col kb-card-clickable';
         card.setAttribute('data-kb-id', kb.id);
         
         card.innerHTML = `
@@ -377,10 +472,10 @@ function renderKnowledgeBases(kbs) {
             </p>
             
             <div class="flex flex-wrap gap-2 mb-4">
-                <span onclick="viewFiles(${kb.id}, event)" class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full cursor-pointer hover:bg-blue-100 transition-custom" title="点击查看文件列表">
+                <span class="px-2 py-1 bg-blue-50 text-blue-600 text-xs rounded-full" title="文件数量">
                     <i class="fa fa-file-o mr-1"></i>${kb.file_count} 文件
                 </span>
-                <span onclick="viewChunks(${kb.id}, event)" class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full cursor-pointer hover:bg-green-100 transition-custom" title="点击查看分块详情">
+                <span class="px-2 py-1 bg-green-50 text-green-600 text-xs rounded-full" title="文本块数量">
                     <i class="fa fa-cubes mr-1"></i>${kb.chunk_count} 块
                 </span>
                 ${renderGraphStats(kb)}
@@ -407,6 +502,14 @@ function renderKnowledgeBases(kbs) {
                 </div>
             </div>
         `;
+
+        card.addEventListener('click', (event) => {
+            // 卡片中的按钮/标签行为优先，不触发详情弹窗
+            if (event.target.closest('button') || event.target.closest('[onclick]')) {
+                return;
+            }
+            openKBDetailModal(kb.id);
+        });
         
         container.appendChild(card);
     });
@@ -429,9 +532,7 @@ function renderGraphStats(kb) {
     }
     
     return `
-        <span onclick="viewGraph(${kb.id}, event)" 
-              class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full cursor-pointer hover:bg-purple-100 transition-custom" 
-              title="点击查看知识图谱">
+        <span class="px-2 py-1 bg-purple-50 text-purple-600 text-xs rounded-full" title="图谱统计">
             <i class="fa fa-sitemap mr-1"></i>${nodeCount} 节点 / ${edgeCount} 关系
         </span>
     `;
@@ -541,6 +642,11 @@ async function uploadFile(kbId) {
         showNotification('正在处理文件...', 'info');
         
         try {
+            const wsReady = await ensureWebSocketReady();
+            if (!wsReady) {
+                showNotification('进度通道未连接，任务仍会执行但不会实时显示进度', 'warning');
+            }
+
             const response = await fetch(
                 `${API_BASE_URL}/knowledge-bases/${kbId}/upload?client_id=${wsClient.clientId}`,
                 {
@@ -572,8 +678,543 @@ async function uploadFile(kbId) {
  * 查看知识库详情
  */
 function viewKB(kbId) {
-    // TODO: 实现详情页面
-    console.log('查看知识库:', kbId);
+    openKBDetailModal(kbId);
+}
+
+/**
+ * 打开知识库详情弹窗
+ */
+async function openKBDetailModal(kbId) {
+    activeKBId = kbId;
+
+    const modal = document.getElementById('kbDetailModal');
+    const titleEl = document.getElementById('kbDetailTitle');
+    const subTitleEl = document.getElementById('kbDetailSubTitle');
+    const metaEl = document.getElementById('kbDetailMeta');
+    const statsEl = document.getElementById('kbDetailStats');
+    const entityTypeEl = document.getElementById('kbEntityTypeList');
+    const inspectorEl = document.getElementById('kbEntityInspector');
+
+    if (!modal) return;
+
+    kbFilesLoaded = false;
+    kbChunksLoaded = false;
+    kbCurrentGraphNodes = [];
+    kbCurrentGraphLinks = [];
+
+    titleEl.textContent = '知识库详情';
+    subTitleEl.textContent = `知识库 #${kbId}`;
+    metaEl.innerHTML = '<p class="text-gray-500">加载中...</p>';
+    statsEl.innerHTML = '';
+    entityTypeEl.innerHTML = '<p class="text-gray-500 text-sm">加载中...</p>';
+    if (inspectorEl) {
+        inspectorEl.textContent = '点击图谱节点后，这里会显示实体属性和关联关系。';
+    }
+
+    modal.classList.remove('hidden');
+    setKBDetailTab('graph');
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}`);
+        if (!response.ok) {
+            throw new Error('获取知识库详情失败');
+        }
+
+        const kb = await response.json();
+        const stats = kb.graph_stats || {};
+
+        titleEl.textContent = kb.name || `知识库 #${kbId}`;
+        subTitleEl.textContent = kb.description
+            ? kb.description
+            : '暂无描述';
+
+        metaEl.innerHTML = `
+            <div><span class="text-gray-500">状态：</span><span class="font-medium">${escapeHtml(getStatusText(kb.status || 'ready'))}</span></div>
+            <div><span class="text-gray-500">向量模型：</span><span class="font-medium">${escapeHtml((kb.embedding_model || '').split('/').pop() || '未知')}</span></div>
+            <div><span class="text-gray-500">创建时间：</span><span class="font-medium">${formatDateTime(kb.created_at)}</span></div>
+            <div><span class="text-gray-500">更新时间：</span><span class="font-medium">${formatDateTime(kb.updated_at)}</span></div>
+        `;
+
+        statsEl.innerHTML = `
+            ${renderStatChip(stats.node_count || 0, '实体节点')}
+            ${renderStatChip(stats.edge_count || 0, '关系边')}
+            ${renderStatChip(kb.file_count || 0, '文件数')}
+            ${renderStatChip(kb.chunk_count || 0, '文本块')}
+        `;
+
+        const entityTypes = Object.entries(stats.entity_types || {})
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 8);
+
+        entityTypeEl.innerHTML = entityTypes.length > 0
+            ? entityTypes.map(([type, count]) => `
+                <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-50 border border-gray-100">
+                    <span class="text-sm text-gray-700"><i class="fa fa-tag text-primary mr-2"></i>${escapeHtml(type)}</span>
+                    <span class="text-sm font-semibold text-gray-800">${count}</span>
+                </div>
+            `).join('')
+            : '<p class="text-gray-500 text-sm">暂无实体类型数据</p>';
+
+        await loadKBGraphPreview(kbId, false);
+    } catch (error) {
+        console.error('加载知识库详情失败:', error);
+        showNotification(error.message || '加载详情失败', 'error');
+    }
+}
+
+/**
+ * 关闭知识库详情弹窗
+ */
+function closeKBDetailModal() {
+    activeKBId = null;
+    const modal = document.getElementById('kbDetailModal');
+    if (modal) {
+        modal.classList.add('hidden');
+    }
+
+    if (kbGraphSimulation) {
+        kbGraphSimulation.stop();
+        kbGraphSimulation = null;
+    }
+}
+
+function setKBDetailTab(tab) {
+    const validTabs = ['graph', 'files', 'chunks'];
+    if (!validTabs.includes(tab)) return;
+    activeKBTab = tab;
+
+    const titleMap = {
+        graph: '知识图谱预览',
+        files: '文件清单',
+        chunks: '文本块浏览'
+    };
+
+    const hintMap = {
+        graph: '展示全量实体关系（不含文本块节点）',
+        files: '展示该知识库中已上传文件',
+        chunks: '浏览文本切分结果（前80条）'
+    };
+
+    const titleEl = document.getElementById('kbWorkbenchTitle');
+    const hintEl = document.getElementById('kbGraphHint');
+    if (titleEl) {
+        titleEl.textContent = titleMap[tab] || '知识库详情';
+    }
+    if (hintEl) {
+        hintEl.textContent = hintMap[tab] || '';
+    }
+
+    document.querySelectorAll('.kb-detail-tab').forEach((btn) => {
+        btn.classList.toggle('active', btn.getAttribute('data-tab') === tab);
+    });
+
+    const graphPanel = document.getElementById('kbTabPanelGraph');
+    const filesPanel = document.getElementById('kbTabPanelFiles');
+    const chunksPanel = document.getElementById('kbTabPanelChunks');
+
+    if (graphPanel) graphPanel.classList.toggle('hidden', tab !== 'graph');
+    if (filesPanel) filesPanel.classList.toggle('hidden', tab !== 'files');
+    if (chunksPanel) chunksPanel.classList.toggle('hidden', tab !== 'chunks');
+
+    const refreshBtn = document.getElementById('kbGraphRefreshBtn');
+    if (refreshBtn) {
+        refreshBtn.classList.toggle('hidden', tab !== 'graph');
+    }
+
+    if (tab === 'files' && activeKBId && !kbFilesLoaded) {
+        loadKBFilesPanel(activeKBId);
+    }
+    if (tab === 'chunks' && activeKBId && !kbChunksLoaded) {
+        loadKBChunksPanel(activeKBId);
+    }
+
+    if (tab !== 'files') {
+        closeKBFilePreview();
+    }
+}
+
+async function loadKBFilesPanel(kbId) {
+    const panel = document.getElementById('kbFilesPanelContent');
+    if (!panel) return;
+
+    panel.innerHTML = '<div class="kb-list-item text-gray-500">正在加载文件列表...</div>';
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/files`);
+        if (!response.ok) {
+            throw new Error('获取文件列表失败');
+        }
+
+        const files = await response.json();
+        kbFilesLoaded = true;
+
+        if (!Array.isArray(files) || files.length === 0) {
+            panel.innerHTML = '<div class="kb-list-item text-gray-500">暂无文件</div>';
+            return;
+        }
+
+        panel.innerHTML = files.map((file) => `
+            <div class="kb-list-item">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="kb-list-title"><i class="fa fa-file-o text-blue-500 mr-2"></i>${escapeHtml(file.filename || '未命名文件')}</div>
+                        <div class="kb-list-sub">
+                            类型：${escapeHtml(file.file_type || '未知')} | 大小：${formatFileSize(file.file_size || 0)} | 状态：${escapeHtml(getFileStatusText(file.status || 'uploaded'))}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <button
+                            type="button"
+                            class="px-3 py-1.5 text-xs rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 transition-custom"
+                            data-action="preview-file"
+                            data-file-id="${file.id}"
+                            data-filename="${escapeHtml(file.filename || '未命名文件')}"
+                        >
+                            <i class="fa fa-eye mr-1"></i>查看原文
+                        </button>
+                        <button
+                            type="button"
+                            class="px-3 py-1.5 text-xs rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-custom"
+                            data-action="delete-file"
+                            data-file-id="${file.id}"
+                            data-filename="${escapeHtml(file.filename || '未命名文件')}"
+                        >
+                            <i class="fa fa-trash mr-1"></i>删除
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    } catch (error) {
+        panel.innerHTML = `<div class="kb-list-item text-red-500">加载失败：${escapeHtml(error.message || '未知错误')}</div>`;
+    }
+}
+
+async function loadKBChunksPanel(kbId) {
+    const panel = document.getElementById('kbChunksPanelContent');
+    if (!panel) return;
+
+    panel.innerHTML = '<div class="kb-list-item text-gray-500">正在加载文本块...</div>';
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/chunks`);
+        if (!response.ok) {
+            throw new Error('获取文本块失败');
+        }
+
+        const data = await response.json();
+        const chunks = Array.isArray(data.chunks) ? data.chunks : [];
+        kbChunksLoaded = true;
+
+        if (chunks.length === 0) {
+            panel.innerHTML = '<div class="kb-list-item text-gray-500">暂无文本块</div>';
+            return;
+        }
+
+        panel.innerHTML = chunks.slice(0, 80).map((chunk) => `
+            <div class="kb-list-item">
+                <div class="kb-list-title">
+                    <i class="fa fa-cube text-green-600 mr-2"></i>
+                    ${escapeHtml(chunk.filename || '未知文件')} · 块 #${(chunk.chunk_index || 0) + 1}
+                </div>
+                <div class="kb-list-sub">${escapeHtml((chunk.content || '').slice(0, 180))}${(chunk.content || '').length > 180 ? '...' : ''}</div>
+            </div>
+        `).join('');
+    } catch (error) {
+        panel.innerHTML = `<div class="kb-list-item text-red-500">加载失败：${escapeHtml(error.message || '未知错误')}</div>`;
+    }
+}
+
+/**
+ * 加载知识库图谱预览
+ */
+async function loadKBGraphPreview(kbId, forceRefresh = false) {
+    const loadingEl = document.getElementById('kbGraphLoading');
+    const emptyEl = document.getElementById('kbGraphEmpty');
+    const hintEl = document.getElementById('kbGraphHint');
+
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (emptyEl) emptyEl.classList.add('hidden');
+
+    try {
+        const query = forceRefresh ? '&_ts=' + Date.now() : '';
+        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/graph/preview?include_all=true${query}`);
+        if (!response.ok) {
+            throw new Error('获取图谱预览失败');
+        }
+
+        const data = await response.json();
+        const preview = data.preview || {};
+        const nodes = Array.isArray(preview.nodes) ? preview.nodes : [];
+        const links = Array.isArray(preview.links) ? preview.links : [];
+
+        if (hintEl) {
+            hintEl.textContent = `全量实体关系图：${nodes.length} 个实体，${links.length} 条关系（不含文本块节点）`;
+        }
+
+        renderKBGraphPreview(nodes, links);
+    } catch (error) {
+        console.error('加载图谱预览失败:', error);
+        showNotification(error.message || '加载图谱失败', 'error');
+        renderKBGraphPreview([], []);
+    } finally {
+        if (loadingEl) loadingEl.classList.add('hidden');
+    }
+}
+
+/**
+ * 渲染知识库图谱预览
+ */
+function renderKBGraphPreview(nodes, links) {
+    const svgEl = document.getElementById('kbGraphSvg');
+    const emptyEl = document.getElementById('kbGraphEmpty');
+    const viewport = document.getElementById('kbGraphViewport');
+
+    if (!svgEl || !viewport || typeof d3 === 'undefined') {
+        return;
+    }
+
+    if (kbGraphSimulation) {
+        kbGraphSimulation.stop();
+        kbGraphSimulation = null;
+    }
+
+    const width = Math.max(360, viewport.clientWidth || 360);
+    const height = Math.max(420, viewport.clientHeight || 420);
+
+    const svg = d3.select(svgEl);
+    svg.selectAll('*').remove();
+    svg.attr('viewBox', `0 0 ${width} ${height}`);
+
+    if (!Array.isArray(nodes) || nodes.length === 0) {
+        if (emptyEl) emptyEl.classList.remove('hidden');
+        return;
+    }
+
+    if (emptyEl) emptyEl.classList.add('hidden');
+
+    const nodeMap = new Map(nodes.map(n => [String(n.id), {
+        id: String(n.id),
+        name: String(n.name || n.id),
+        type: String(n.type || 'Unknown'),
+        mention_count: Number(n.mention_count || 0)
+    }]));
+
+    const graphLinks = (Array.isArray(links) ? links : [])
+        .filter(l => nodeMap.has(String(l.source)) && nodeMap.has(String(l.target)))
+        .map(l => ({
+            source: String(l.source),
+            target: String(l.target),
+            relation: String(l.relation || '关联'),
+            evidence_count: Number(l.evidence_count || 1)
+        }));
+
+    const graphNodes = Array.from(nodeMap.values());
+    kbCurrentGraphNodes = graphNodes;
+    kbCurrentGraphLinks = graphLinks;
+
+    const defs = svg.append('defs');
+    defs.append('marker')
+        .attr('id', 'kb-arrowhead')
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 20)
+        .attr('refY', 0)
+        .attr('markerWidth', 6)
+        .attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', '#94a3b8');
+
+    const g = svg.append('g');
+
+    // 允许拖动画布与滚轮缩放，便于查看远处节点
+    const zoomBehavior = d3.zoom()
+        .scaleExtent([0.35, 3.2])
+        .on('zoom', (event) => {
+            g.attr('transform', event.transform);
+        });
+
+    svg
+        .call(zoomBehavior)
+        .on('dblclick.zoom', null)
+        .style('cursor', 'grab')
+        .on('mousedown', () => {
+            svg.style('cursor', 'grabbing');
+        })
+        .on('mouseup', () => {
+            svg.style('cursor', 'grab');
+        })
+        .on('mouseleave', () => {
+            svg.style('cursor', 'grab');
+        });
+
+    // 初始化一个略微缩小并居中的视角，避免大图超出视野
+    const initialTransform = d3.zoomIdentity
+        .translate(width * 0.08, height * 0.06)
+        .scale(0.95);
+    svg.call(zoomBehavior.transform, initialTransform);
+
+    const link = g.append('g')
+        .selectAll('line')
+        .data(graphLinks)
+        .join('line')
+        .attr('class', 'kb-graph-link')
+        .attr('stroke-width', d => 1 + Math.min(2.2, d.evidence_count * 0.2))
+        .attr('marker-end', 'url(#kb-arrowhead)');
+
+    const node = g.append('g')
+        .selectAll('g')
+        .data(graphNodes)
+        .join('g')
+        .attr('class', 'kb-graph-node')
+        .style('cursor', 'grab');
+
+    node.append('circle')
+        .attr('r', d => d.mention_count > 0 ? Math.min(18, 11 + Math.sqrt(d.mention_count)) : 11)
+        .attr('fill', d => getTypeColor(d.type))
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 2);
+
+    node.append('text')
+        .attr('dy', d => d.mention_count > 0 ? 28 : 24)
+        .attr('text-anchor', 'middle')
+        .text(d => d.name.length > 8 ? `${d.name.slice(0, 8)}...` : d.name);
+
+    node.append('title')
+        .text(d => `${d.name} (${d.type})`);
+
+    node.on('click', (event, d) => {
+        event.stopPropagation();
+
+        node.selectAll('circle')
+            .attr('stroke', '#fff')
+            .attr('stroke-width', 2)
+            .attr('opacity', 0.45);
+
+        d3.select(event.currentTarget)
+            .select('circle')
+            .attr('stroke', '#0f172a')
+            .attr('stroke-width', 3)
+            .attr('opacity', 1);
+
+        renderKBEntityInspector(d, graphLinks);
+    });
+
+    svg.on('click', () => {
+        node.selectAll('circle')
+            .attr('stroke', '#fff')
+            .attr('stroke-width', 2)
+            .attr('opacity', 1);
+        const inspector = document.getElementById('kbEntityInspector');
+        if (inspector) {
+            inspector.textContent = '点击图谱节点后，这里会显示实体属性和关联关系。';
+        }
+    });
+
+    kbGraphSimulation = d3.forceSimulation(graphNodes)
+        .force('link', d3.forceLink(graphLinks).id(d => d.id).distance(100).strength(0.45))
+        .force('charge', d3.forceManyBody().strength(-320))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collide', d3.forceCollide().radius(d => (d.mention_count > 0 ? Math.min(18, 11 + Math.sqrt(d.mention_count)) : 11) + 10));
+
+    node.call(
+        d3.drag()
+            .on('start', (event) => {
+                if (!event.active) kbGraphSimulation.alphaTarget(0.3).restart();
+                event.sourceEvent && event.sourceEvent.stopPropagation();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            })
+            .on('drag', (event) => {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            })
+            .on('end', (event) => {
+                if (!event.active) kbGraphSimulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            })
+    );
+
+    kbGraphSimulation.on('tick', () => {
+        link
+            .attr('x1', d => d.source.x)
+            .attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x)
+            .attr('y2', d => d.target.y);
+
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+    // 默认展示第一个节点信息
+    if (graphNodes.length > 0) {
+        renderKBEntityInspector(graphNodes[0], graphLinks);
+    }
+}
+
+function renderKBEntityInspector(node, links) {
+    const inspector = document.getElementById('kbEntityInspector');
+    if (!inspector || !node) return;
+
+    const related = (Array.isArray(links) ? links : []).filter((link) => {
+        const source = typeof link.source === 'object' ? link.source.id : link.source;
+        const target = typeof link.target === 'object' ? link.target.id : link.target;
+        return source === node.id || target === node.id;
+    });
+
+    const relationsHtml = related.length > 0
+        ? related.slice(0, 12).map((link) => {
+            const source = typeof link.source === 'object' ? link.source.name : link.source;
+            const target = typeof link.target === 'object' ? link.target.name : link.target;
+            return `<div class="kb-relation-item">${escapeHtml(String(source))} <strong>${escapeHtml(String(link.relation || '关联'))}</strong> ${escapeHtml(String(target))}</div>`;
+        }).join('')
+        : '<div class="text-gray-500 text-xs">暂无关联关系</div>';
+
+    inspector.innerHTML = `
+        <div class="kb-entity-card">
+            <div>
+                <span class="kb-entity-title">${escapeHtml(node.name)}</span>
+                <span class="kb-entity-type">${escapeHtml(node.type)}</span>
+            </div>
+            <div class="kb-entity-row"><span class="kb-entity-k">实体ID</span><span class="kb-entity-v">${escapeHtml(node.id.slice(0, 20))}${node.id.length > 20 ? '...' : ''}</span></div>
+            <div class="kb-entity-row"><span class="kb-entity-k">提及次数</span><span class="kb-entity-v">${node.mention_count || 0}</span></div>
+            <div class="kb-entity-row"><span class="kb-entity-k">关联边数量</span><span class="kb-entity-v">${related.length}</span></div>
+            <div class="mt-2 text-xs text-gray-500">关联关系</div>
+            ${relationsHtml}
+        </div>
+    `;
+}
+
+function renderStatChip(value, label) {
+    return `
+        <div class="kb-stat-chip">
+            <span class="kb-stat-value">${value}</span>
+            <span class="kb-stat-label">${label}</span>
+        </div>
+    `;
+}
+
+function formatDateTime(dateString) {
+    if (!dateString) return '未知';
+    try {
+        return new Date(dateString).toLocaleString('zh-CN');
+    } catch (e) {
+        return '未知';
+    }
+}
+
+function getTypeColor(type) {
+    const colorMap = {
+        Person: '#2563eb',
+        Organization: '#0f766e',
+        Location: '#dc2626',
+        Product: '#d97706',
+        Concept: '#7c3aed',
+        Event: '#db2777',
+        Unknown: '#64748b'
+    };
+    return colorMap[type] || '#64748b';
 }
 
 /**
@@ -750,332 +1391,59 @@ function showSearchResults(result) {
 }
 
 /**
- * 查看文件列表
+ * 在详情弹窗中删除文件
  */
-async function viewFiles(kbId, event) {
-    event.stopPropagation();
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/files`);
-        if (!response.ok) throw new Error('获取文件列表失败');
-        
-        const files = await response.json();
-        
-        const modal = document.getElementById('filesModal');
-        const content = document.getElementById('filesContent');
-        
-        if (files.length === 0) {
-            content.innerHTML = '<p class="text-center text-gray-500 py-8">暂无文件</p>';
-        } else {
-            content.innerHTML = files.map(file => `
-                <div class="p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-custom">
-                    <div class="flex items-center justify-between">
-                        <div class="flex-1 cursor-pointer" onclick="viewFileContent(${kbId}, ${file.id}, '${escapeHtml(file.filename)}')">
-                            <div class="flex items-center space-x-2 mb-2">
-                                <i class="fa fa-file-o text-blue-500"></i>
-                                <span class="font-medium hover:text-primary">${escapeHtml(file.filename)}</span>
-                                <span class="px-2 py-0.5 bg-blue-100 text-blue-600 text-xs rounded">${escapeHtml(file.file_type)}</span>
-                                <span class="px-2 py-0.5 ${getFileStatusClass(file.status)} text-xs rounded">${getFileStatusText(file.status)}</span>
-                            </div>
-                            <div class="text-sm text-gray-500">
-                                <span>大小: ${formatFileSize(file.file_size)}</span>
-                                <span class="ml-3 text-xs text-primary">点击查看内容 →</span>
-                            </div>
-                        </div>
-                        <button 
-                            onclick="deleteFile(${kbId}, ${file.id}, '${escapeHtml(file.filename)}', event)" 
-                            class="ml-4 px-3 py-2 bg-red-500 hover:bg-red-600 text-white text-sm rounded-lg transition-colors flex items-center space-x-1"
-                            title="删除文件"
-                        >
-                            <i class="fas fa-trash-alt"></i>
-                            <span>删除</span>
-                        </button>
-                    </div>
-                </div>
-            `).join('');
-        }
-        
-        modal.classList.remove('hidden');
-        
-    } catch (error) {
-        console.error('加载文件列表失败:', error);
-        alert('加载文件列表失败: ' + error.message);
-    }
-}
-
-/**
- * 删除文件
- */
-async function deleteFile(kbId, fileId, filename, event) {
-    event.stopPropagation();
-    
-    // 确认对话框
+async function deleteKBFile(kbId, fileId, filename) {
     if (!confirm(`确定要删除文件 "${filename}" 吗？\n\n删除后将无法恢复，相关的文本块和向量数据也会被删除。`)) {
         return;
     }
-    
+
     try {
         const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/files/${fileId}`, {
             method: 'DELETE'
         });
-        
+
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.detail || '删除失败');
         }
-        
+
         const result = await response.json();
-        showNotification(result.message, 'success');
-        
-        // 重新加载文件列表
-        await viewFiles(kbId, event);
-        
-        // 重新加载知识库列表以更新统计信息
-        await loadKnowledgeBases();
-        
+        showNotification(result.message || '文件删除成功', 'success');
+
+        await Promise.all([
+            loadKBFilesPanel(kbId),
+            loadKnowledgeBases()
+        ]);
+
+        kbChunksLoaded = false;
+        if (activeKBId === kbId && activeKBTab === 'chunks') {
+            await loadKBChunksPanel(kbId);
+        }
+        if (activeKBId === kbId) {
+            await loadKBGraphPreview(kbId, true);
+        }
+
+        if (activeKBId === kbId) {
+            const detailResp = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}`);
+            if (detailResp.ok) {
+                const kb = await detailResp.json();
+                const stats = kb.graph_stats || {};
+                const statsEl = document.getElementById('kbDetailStats');
+                if (statsEl) {
+                    statsEl.innerHTML = `
+                        ${renderStatChip(stats.node_count || 0, '实体节点')}
+                        ${renderStatChip(stats.edge_count || 0, '关系边')}
+                        ${renderStatChip(kb.file_count || 0, '文件数')}
+                        ${renderStatChip(kb.chunk_count || 0, '文本块')}
+                    `;
+                }
+            }
+        }
     } catch (error) {
         console.error('删除文件失败:', error);
-        showNotification('删除文件失败: ' + error.message, 'error');
+        showNotification('删除文件失败: ' + (error.message || '未知错误'), 'error');
     }
-}
-
-/**
- * 查看文本块列表
- */
-async function viewChunks(kbId, event) {
-    event.stopPropagation();
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/chunks`);
-        if (!response.ok) throw new Error('获取文本块列表失败');
-        
-        const data = await response.json();
-        const chunks = data.chunks || [];
-        
-        const modal = document.getElementById('chunksModal');
-        const content = document.getElementById('chunksContent');
-        
-        if (chunks.length === 0) {
-            content.innerHTML = '<div class="text-center py-8"><div class="text-gray-400 mb-2"><i class="fa fa-inbox text-4xl"></i></div><p class="text-gray-500">暂无文本块</p><p class="text-sm text-gray-400 mt-2">文件处理完成后会自动生成文本块</p></div>';
-        } else {
-            // 按文件分组显示
-            const groupedChunks = {};
-            chunks.forEach(chunk => {
-                if (!groupedChunks[chunk.file_id]) {
-                    groupedChunks[chunk.file_id] = {
-                        filename: chunk.filename,
-                        file_type: chunk.file_type,
-                        chunks: []
-                    };
-                }
-                groupedChunks[chunk.file_id].chunks.push(chunk);
-            });
-            
-            content.innerHTML = `
-                <div class="mb-4 p-3 bg-blue-50 rounded-lg text-sm text-blue-800">
-                    <i class="fa fa-info-circle mr-2"></i>共 ${chunks.length} 个文本块，来自 ${Object.keys(groupedChunks).length} 个文件
-                </div>
-            ` + Object.entries(groupedChunks).map(([fileId, fileData]) => `
-                <div class="border border-gray-200 rounded-lg overflow-hidden mb-4">
-                    <div class="bg-gradient-to-r from-blue-50 to-blue-100 px-4 py-3 flex items-center justify-between">
-                        <div class="flex items-center space-x-2">
-                            <i class="fa fa-file-text-o text-blue-600"></i>
-                            <span class="font-medium text-blue-900">${escapeHtml(fileData.filename)}</span>
-                            <span class="px-2 py-0.5 bg-white text-blue-600 text-xs rounded shadow-sm">${escapeHtml(fileData.file_type)}</span>
-                        </div>
-                        <span class="text-sm font-medium text-blue-700 bg-white px-3 py-1 rounded-full shadow-sm">${fileData.chunks.length} 个块</span>
-                    </div>
-                    <div class="divide-y divide-gray-200">
-                        ${fileData.chunks.map((chunk, idx) => `
-                            <div class="p-4 hover:bg-gray-50 transition-custom ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}">
-                                <div class="flex items-start justify-between mb-3">
-                                    <div class="flex items-center space-x-2">
-                                        <span class="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded">块 #${chunk.chunk_index + 1}</span>
-                                        <span class="text-xs text-gray-500">${chunk.content.length} 字符</span>
-                                    </div>
-                                    <span class="text-xs text-gray-400">${new Date(chunk.created_at).toLocaleString('zh-CN')}</span>
-                                </div>
-                                <div class="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap bg-white p-3 rounded border border-gray-100">${escapeHtml(chunk.content.substring(0, 500))}${chunk.content.length > 500 ? '<span class="text-gray-400">...</span>' : ''}</div>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-            `).join('');
-        }
-        
-        modal.classList.remove('hidden');
-        
-    } catch (error) {
-        console.error('加载文本块列表失败:', error);
-        alert('加载文本块列表失败: ' + error.message);
-    }
-}
-
-/**
- * 关闭文件列表模态框
- */
-function closeFilesModal() {
-    document.getElementById('filesModal').classList.add('hidden');
-}
-
-/**
- * 关闭文本块模态框
- */
-function closeChunksModal() {
-    document.getElementById('chunksModal').classList.add('hidden');
-}
-
-/**
- * 查看知识图谱
- */
-async function viewGraph(kbId, event) {
-    if (event) {
-        event.stopPropagation();
-    }
-    
-    try {
-        const modal = document.getElementById('graphModal');
-        const nameEl = document.getElementById('graphKbName');
-        const content = document.getElementById('graphContent');
-        
-        // 显示加载状态
-        nameEl.textContent = '加载中...';
-        content.innerHTML = '<div class="flex items-center justify-center py-12"><i class="fa fa-spinner fa-spin text-3xl text-primary"></i></div>';
-        modal.classList.remove('hidden');
-        
-        // 获取图谱统计
-        const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/graph/stats`);
-        
-        if (!response.ok) {
-            throw new Error('获取图谱统计失败');
-        }
-        
-        const data = await response.json();
-        const stats = data.stats || {};
-        
-        // 更新标题
-        nameEl.textContent = data.kb_name || `知识库 #${kbId}`;
-        
-        // 渲染统计信息
-        const nodeCount = stats.node_count || 0;
-        const edgeCount = stats.edge_count || 0;
-        const entityTypes = stats.entity_types || {};
-        
-        if (nodeCount === 0) {
-            content.innerHTML = `
-                <div class="text-center py-12">
-                    <div class="text-gray-400 mb-4">
-                        <i class="fa fa-sitemap text-6xl"></i>
-                    </div>
-                    <p class="text-gray-500 text-lg">暂无知识图谱数据</p>
-                    <p class="text-sm text-gray-400 mt-2">上传文档后会自动构建知识图谱</p>
-                </div>
-            `;
-            return;
-        }
-        
-        // 构建实体类型列表
-        const entityTypesHtml = Object.entries(entityTypes)
-            .sort((a, b) => b[1] - a[1])
-            .map(([type, count]) => `
-                <div class="flex justify-between items-center py-2 px-4 bg-gray-50 rounded-lg">
-                    <span class="text-sm text-gray-700">
-                        <i class="fa fa-tag mr-2 text-primary"></i>${escapeHtml(type)}
-                    </span>
-                    <span class="text-sm font-semibold text-primary">${count}</span>
-                </div>
-            `).join('');
-        
-        content.innerHTML = `
-            <div class="space-y-6">
-                <!-- 概览统计 -->
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="bg-purple-50 rounded-xl p-6 border border-purple-200">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-sm text-purple-600 mb-1">实体节点</p>
-                                <p class="text-3xl font-bold text-purple-700">${nodeCount}</p>
-                            </div>
-                            <div class="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center">
-                                <i class="fa fa-circle-o text-purple-600 text-2xl"></i>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="bg-blue-50 rounded-xl p-6 border border-blue-200">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-sm text-blue-600 mb-1">关系边</p>
-                                <p class="text-3xl font-bold text-blue-700">${edgeCount}</p>
-                            </div>
-                            <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-                                <i class="fa fa-link text-blue-600 text-2xl"></i>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 实体类型分布 -->
-                ${entityTypesHtml ? `
-                    <div>
-                        <h3 class="text-lg font-bold text-dark mb-4 flex items-center">
-                            <i class="fa fa-pie-chart mr-2 text-primary"></i>
-                            实体类型分布
-                        </h3>
-                        <div class="space-y-2">
-                            ${entityTypesHtml}
-                        </div>
-                    </div>
-                ` : ''}
-                
-                <!-- 提示信息 -->
-                <div class="bg-blue-50 border-l-4 border-blue-400 p-4 rounded">
-                    <div class="flex items-start">
-                        <i class="fa fa-info-circle text-blue-600 mt-1 mr-3"></i>
-                        <div class="text-sm text-blue-700">
-                            <p class="font-semibold mb-1">关于知识图谱</p>
-                            <p>知识图谱通过提取文档中的实体和关系，构建结构化的知识网络，可以增强检索和推理能力。</p>
-                            <p class="mt-2">您可以在 <a href="http://localhost:7474" target="_blank" class="underline hover:text-blue-900">Neo4j Browser (localhost:7474)</a> 中可视化查看完整图谱。</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-    } catch (error) {
-        console.error('加载知识图谱失败:', error);
-        const content = document.getElementById('graphContent');
-        content.innerHTML = `
-            <div class="text-center py-12">
-                <div class="text-red-400 mb-4">
-                    <i class="fa fa-exclamation-circle text-6xl"></i>
-                </div>
-                <p class="text-red-500 text-lg">${escapeHtml(error.message)}</p>
-            </div>
-        `;
-    }
-}
-
-/**
- * 关闭知识图谱模态框
- */
-function closeGraphModal() {
-    document.getElementById('graphModal').classList.add('hidden');
-}
-
-/**
- * 获取文件状态样式
- */
-function getFileStatusClass(status) {
-    const statusMap = {
-        'uploaded': 'bg-blue-100 text-blue-600',
-        'parsing': 'bg-yellow-100 text-yellow-600',
-        'parsed': 'bg-blue-100 text-blue-600',
-        'embedding': 'bg-purple-100 text-purple-600',
-        'completed': 'bg-green-100 text-green-600',
-        'error': 'bg-red-100 text-red-600'
-    };
-    return statusMap[status] || 'bg-gray-100 text-gray-600';
 }
 
 /**
@@ -1109,17 +1477,20 @@ function formatFileSize(bytes) {
  */
 async function viewFileContent(kbId, fileId, filename) {
     try {
-        // 显示加载状态
-        const modal = document.getElementById('fileContentModal');
-        const titleEl = document.getElementById('fileContentTitle');
-        const infoEl = document.getElementById('fileContentInfo');
-        const bodyEl = document.getElementById('fileContentBody');
-        
-        titleEl.textContent = filename;
+        const previewPanel = document.getElementById('kbFilePreviewPanel');
+        const titleEl = document.getElementById('kbFilePreviewTitle');
+        const infoEl = document.getElementById('kbFilePreviewInfo');
+        const bodyEl = document.getElementById('kbFilePreviewBody');
+
+        if (!previewPanel || !titleEl || !infoEl || !bodyEl) {
+            showNotification('文件预览容器不存在', 'error');
+            return;
+        }
+
+        titleEl.textContent = filename || '文件原文';
         infoEl.textContent = '加载中...';
-        bodyEl.innerHTML = '<div class="flex items-center justify-center py-12"><i class="fa fa-spinner fa-spin text-3xl text-primary"></i></div>';
-        
-        modal.classList.remove('hidden');
+        bodyEl.innerHTML = '<div class="flex items-center justify-center py-8 text-primary"><i class="fa fa-spinner fa-spin mr-2"></i>原文加载中</div>';
+        previewPanel.classList.remove('hidden');
         
         // 获取文件内容
         const response = await fetch(`${API_BASE_URL}/knowledge-bases/${kbId}/files/${fileId}/content`);
@@ -1157,18 +1528,34 @@ async function viewFileContent(kbId, fileId, filename) {
             // 默认文本显示（txt等）
             bodyEl.innerHTML = `<pre class="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">${escapeHtml(data.content)}</pre>`;
         }
+
+        previewPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         
     } catch (error) {
         console.error('加载文件内容失败:', error);
-        const bodyEl = document.getElementById('fileContentBody');
-        bodyEl.innerHTML = `<div class="text-center text-red-500 py-8"><i class="fa fa-exclamation-triangle mr-2"></i>加载失败: ${error.message}</div>`;
+        const previewPanel = document.getElementById('kbFilePreviewPanel');
+        const bodyEl = document.getElementById('kbFilePreviewBody');
+        const infoEl = document.getElementById('kbFilePreviewInfo');
+        if (previewPanel) previewPanel.classList.remove('hidden');
+        if (infoEl) infoEl.textContent = '加载失败';
+        if (bodyEl) {
+            bodyEl.innerHTML = `<div class="text-center text-red-500 py-8"><i class="fa fa-exclamation-triangle mr-2"></i>加载失败: ${escapeHtml(error.message || '未知错误')}</div>`;
+        }
     }
 }
 
 /**
- * 关闭文件内容模态框
+ * 关闭文件内嵌预览
  */
-function closeFileContentModal() {
-    document.getElementById('fileContentModal').classList.add('hidden');
+function closeKBFilePreview() {
+    const previewPanel = document.getElementById('kbFilePreviewPanel');
+    const titleEl = document.getElementById('kbFilePreviewTitle');
+    const infoEl = document.getElementById('kbFilePreviewInfo');
+    const bodyEl = document.getElementById('kbFilePreviewBody');
+
+    if (previewPanel) previewPanel.classList.add('hidden');
+    if (titleEl) titleEl.textContent = '文件原文';
+    if (infoEl) infoEl.textContent = '';
+    if (bodyEl) bodyEl.innerHTML = '';
 }
 

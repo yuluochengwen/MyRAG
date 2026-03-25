@@ -15,8 +15,12 @@ from app.services.agent_service import AgentService, Tool
 class MockLLMService:
     """模拟 LLM 服务用于测试"""
     
+    def __init__(self):
+        self.calls = []
+    
     async def generate(self, prompt: str, **kwargs):
         """模拟 LLM 响应"""
+        self.calls.append({"prompt": prompt, "kwargs": kwargs})
         print(f"\n{'='*60}")
         print("LLM Prompt:")
         print(prompt)
@@ -177,6 +181,45 @@ async def test_custom_tool():
     print("-"*70)
 
 
+async def test_session_context():
+    """测试 session_id 上下文保留"""
+    print("\n" + "="*70)
+    print("测试 6: Session 上下文")
+    print("="*70)
+
+    llm_service = MockLLMService()
+    agent = AgentService(llm_service, None, max_iterations=2)
+
+    await agent.run("第一轮问题", session_id="demo_session")
+    await agent.run("第二轮问题", session_id="demo_session")
+
+    history = agent.session_histories.get("demo_session", [])
+    print(f"会话历史长度: {len(history)}")
+    assert len(history) >= 2, "期望 session 历史被保存"
+
+    second_call_prompt = llm_service.calls[-1]["prompt"]
+    assert "历史对话" in second_call_prompt, "第二轮 prompt 应包含历史对话"
+
+    print("Session 上下文测试通过")
+    print("-"*70)
+
+
+async def test_show_steps_option():
+    """测试 show_steps 参数"""
+    print("\n" + "="*70)
+    print("测试 7: show_steps 控制")
+    print("="*70)
+
+    llm_service = MockLLMService()
+    agent = AgentService(llm_service, None, max_iterations=2)
+    result = await agent.run("计算 2+3*4", show_steps=False)
+
+    assert result["steps"] == [], "show_steps=False 时 steps 应为空"
+    assert "iterations" in result, "结果应包含 iterations 字段"
+    print("show_steps 测试通过")
+    print("-"*70)
+
+
 def test_tool_execution():
     """测试工具直接执行"""
     print("\n" + "="*70)
@@ -226,6 +269,12 @@ async def run_all_tests():
         
         # 测试 5: 工具直接执行
         test_tool_execution()
+
+        # 测试 6: session 上下文
+        await test_session_context()
+
+        # 测试 7: show_steps 参数
+        await test_show_steps_option()
         
         print("\n" + "="*70)
         print("✅ 所有测试完成！")

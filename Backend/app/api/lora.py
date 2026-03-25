@@ -9,11 +9,11 @@ import json
 
 from app.core.dependencies import get_database
 from app.core.database import DatabaseManager
-from app.services.lora_service import LoRAService
-from app.services.lora_training_service import LoRATrainingService
-from app.services.dataset_validator_service import DatasetValidatorService
+from app.services.lora.lora_service import LoRAService
+from app.services.lora.lora_training_service import LoRATrainingService
+from app.services.lora.dataset_validator_service import DatasetValidatorService
 from app.websocket.manager import ws_manager
-from app.schemas.lora import (
+from app.models.schemas import (
     LoRAModelResponse,
     LoRAModelListResponse,
     BaseModelInfo,
@@ -23,7 +23,7 @@ from app.schemas.lora import (
     TrainingJobDetailResponse,
     TrainingJobListResponse,
     DatasetValidationResponse,
-    MessageResponse
+    LoRAMessageResponse,
 )
 from app.utils.logger import get_logger
 
@@ -90,7 +90,7 @@ async def get_lora_model(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/models/{lora_id}", response_model=MessageResponse)
+@router.delete("/models/{lora_id}", response_model=LoRAMessageResponse)
 async def delete_lora_model(
     lora_id: int,
     db: DatabaseManager = Depends(get_database)
@@ -103,7 +103,7 @@ async def delete_lora_model(
         if not result["success"]:
             raise HTTPException(status_code=404, detail=result["message"])
         
-        return MessageResponse(
+        return LoRAMessageResponse(
             message=result["message"],
             success=True
         )
@@ -309,7 +309,7 @@ async def get_training_job(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/training-jobs/{job_id}/cancel", response_model=MessageResponse)
+@router.post("/training-jobs/{job_id}/cancel", response_model=LoRAMessageResponse)
 async def cancel_training_job(
     job_id: int,
     db: DatabaseManager = Depends(get_database)
@@ -322,7 +322,7 @@ async def cancel_training_job(
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["message"])
         
-        return MessageResponse(
+        return LoRAMessageResponse(
             message=result["message"],
             success=True
         )

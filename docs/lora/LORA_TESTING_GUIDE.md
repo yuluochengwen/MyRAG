@@ -32,7 +32,7 @@
 
 ```bash
 # 测试数据集验证
-pytest Backend/tests/test_lora_integration.py::TestDatasetValidator -v
+pytest test/test_lora_integration.py::TestDatasetValidator -v
 ```
 
 **验证点**：
@@ -46,7 +46,7 @@ pytest Backend/tests/test_lora_integration.py::TestDatasetValidator -v
 
 ```bash
 # 测试 LoRA 模型管理
-pytest Backend/tests/test_lora_integration.py::TestLoRAService -v
+pytest test/test_lora_integration.py::TestLoRAService -v
 ```
 
 **验证点**：
@@ -59,7 +59,7 @@ pytest Backend/tests/test_lora_integration.py::TestLoRAService -v
 
 ```bash
 # 测试 LoRA 推理
-pytest Backend/tests/test_lora_integration.py::TestLoRAInferenceService -v
+pytest test/test_lora_integration.py::TestLoRAInferenceService -v
 ```
 
 **验证点**：
@@ -74,7 +74,7 @@ pytest Backend/tests/test_lora_integration.py::TestLoRAInferenceService -v
 
 ```bash
 # 测试所有 API 端点
-pytest Backend/tests/test_lora_integration.py::TestLoRAAPI -v
+pytest test/test_lora_integration.py::TestLoRAAPI -v
 ```
 
 **验证点**：
@@ -354,7 +354,7 @@ ab -n 100 -c 10 http://localhost:8000/api/lora/models
 
 ```bash
 # 运行 24 小时稳定性测试
-python Backend/tests/stress_test.py --duration 24h
+python test/stress_test.py --duration 24h
 ```
 
 **验证点**：
@@ -413,13 +413,13 @@ python Backend/tests/stress_test.py --duration 24h
 
 ```bash
 # 快速测试（跳过慢速测试）
-pytest Backend/tests/ -v -m "not slow"
+pytest test/ -v -m "not slow"
 
 # 完整测试（包括慢速测试）
-pytest Backend/tests/ -v
+pytest test/ -v
 
 # 生成覆盖率报告
-pytest Backend/tests/ --cov=app --cov-report=html
+pytest test/ --cov=app --cov-report=html
 ```
 
 ### CI/CD 集成
@@ -450,7 +450,7 @@ jobs:
     
     - name: Run tests
       run: |
-        pytest Backend/tests/ -v -m "not slow" --cov=app
+        pytest test/ -v -m "not slow" --cov=app
 ```
 
 ## 故障排除
@@ -527,6 +527,6 @@ sudo ufw allow 8000
 ## 参考资料
 
 - [LoRA API 文档](./LORA_API.md)
-- [数据库迁移指南](../scripts/README_LORA_MIGRATION.md)
+- [数据库迁移指南](../../scripts/db/README_LORA_MIGRATION.md)
 - [PyTest 文档](https://docs.pytest.org/)
 - [FastAPI 测试指南](https://fastapi.tiangolo.com/tutorial/testing/)

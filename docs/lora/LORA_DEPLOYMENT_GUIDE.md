@@ -85,7 +85,7 @@ mysqldump -u root -p myrag > backup_$(date +%Y%m%d_%H%M%S).sql
 #### 2.2 执行迁移脚本
 
 ```bash
-mysql -u root -p myrag < Backend/scripts/lora_migration.sql
+mysql -u root -p myrag < scripts/db/lora_migration.sql
 ```
 
 #### 2.3 验证迁移
@@ -560,7 +560,7 @@ git pull origin main
 pip install -r Backend/requirements.txt --upgrade
 
 # 5. 执行迁移（如果有）
-mysql -u root -p myrag < Backend/scripts/migration_v2.sql
+mysql -u root -p myrag < scripts/db/migration_v2.sql
 
 # 6. 启动服务
 sudo systemctl start myrag-backend
@@ -643,7 +643,7 @@ curl http://localhost:8000/health
 如果在部署过程中遇到问题：
 
 1. 查看日志：`data/logs/app.log`
-2. 查看文档：`Backend/docs/`
+2. 查看文档：`docs/lora/`
 3. 提交 Issue：[GitHub Issues]
 4. 联系团队：[support@example.com]
 

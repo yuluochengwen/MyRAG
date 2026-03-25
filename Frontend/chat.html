@@ -7,7 +7,7 @@
   <!-- 引入Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- 引入Font Awesome -->
-  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet" onerror="this.onerror=null;this.href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';">
   <!-- 引入Marked.js (Markdown渲染) -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <!-- 引入Highlight.js (代码高亮) -->
@@ -58,7 +58,7 @@
         <nav class="hidden md:flex items-center space-x-1">
           <a href="knowledge-base.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">知识库</a>
           <a href="intelligent-assistant.html" class="nav-link nav-active px-4 py-2 font-medium border-b-2 transition-custom">智能助手</a>
-          <a href="agent.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">Agent</a>
+          <a href="agent-demo.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">Agent</a>
           <a href="model-management.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">模型管理</a>
         </nav>
         
@@ -84,7 +84,7 @@
         <nav class="flex flex-col space-y-2">
           <a href="knowledge-base.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">知识库</a>
           <a href="intelligent-assistant.html" class="mobile-nav-link nav-active px-4 py-3 font-medium bg-primary/5 rounded-lg text-primary transition-custom">智能助手</a>
-          <a href="agent.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">Agent</a>
+          <a href="agent-demo.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">Agent</a>
           <a href="model-management.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">模型管理</a>
         </nav>
       </div>
@@ -217,6 +217,19 @@
                       <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
                     </label>
                   </div>                  
+
+                  <!-- 深度思考开关 -->
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <i class="fa fa-lightbulb-o text-amber-600"></i>
+                      <span class="text-sm text-gray-700">深度思考</span>
+                      <span class="text-xs text-gray-500" id="deepThinkingHint">(仅本地模型)</span>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" id="deepThinkingToggle" class="sr-only peer">
+                      <div class="w-11 h-6 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/30 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-600"></div>
+                    </label>
+                  </div>
 
                   <!-- 历史记忆开关 -->
                   <div class="flex items-center justify-between">
@@ -373,9 +386,9 @@
   <script src="js/common.js"></script>
   
   <!-- 引入图谱可视化模块 -->
-  <script src="js/graph-visualization.js"></script>
+  <script src="js/graph-visualization.js?v=20260318-graph-ui-v7"></script>
   
   <!-- 引入聊天页面逻辑 -->
-  <script src="js/chat.js"></script>
+  <script src="js/chat.js?v=20260318-chat-graph-v2"></script>
 </body>
 </html>

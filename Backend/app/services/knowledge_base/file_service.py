@@ -33,47 +33,48 @@ class FileService:
         """
         保存文件到磁盘和数据库
         
-        Args:
-            file_content: 文件内容
-            filename: 文件名
-            kb_id: 知识库ID
-            file_type: 文件类型
-            
-        Returns:
-            文件对象
+        使用流式读取：边读边计算 hash 边写临时文件，避免大文件全量驻留内存。
         """
         try:
-            # 读取文件内容
-            content = file_content.read()
-            file_size = len(content)
-            
-            # 验证文件大小
-            validate_file_size(file_size)
-            
-            # 清理文件名，防止路径遍历攻击
             from app.utils.validators import sanitize_path
             safe_filename = sanitize_path(filename)
-            
-            # 计算文件哈希
-            file_hash = hashlib.md5(content).hexdigest()
-            
-            # 检查是否已存在
-            existing = await self.get_file_by_hash(kb_id, file_hash)
-            if existing:
-                logger.warning(f"文件已存在: {filename}, hash={file_hash}")
-                return existing
-            
-            # 生成存储路径: kb_{kb_id}/files/{file_hash}_{filename}
+
             kb_dir = os.path.join(self.upload_dir, f"kb_{kb_id}", "files")
             os.makedirs(kb_dir, exist_ok=True)
-            
-            storage_path = os.path.join(kb_dir, f"{file_hash}_{safe_filename}")
-            
-            # 保存文件
-            with open(storage_path, 'wb') as f:
-                f.write(content)
-            
-            # 保存到数据库
+
+            # 流式写入临时文件 + 同步计算 hash 和大小
+            tmp_path = os.path.join(kb_dir, f"_uploading_{safe_filename}")
+            md5 = hashlib.md5()
+            file_size = 0
+            chunk_size = 8 * 1024 * 1024  # 8MB per read
+
+            try:
+                with open(tmp_path, 'wb') as tmp_f:
+                    while True:
+                        chunk = file_content.read(chunk_size)
+                        if not chunk:
+                            break
+                        md5.update(chunk)
+                        tmp_f.write(chunk)
+                        file_size += len(chunk)
+
+                validate_file_size(file_size)
+                file_hash = md5.hexdigest()
+
+                existing = await self.get_file_by_hash(kb_id, file_hash)
+                if existing:
+                    os.remove(tmp_path)
+                    setattr(existing, "_is_dedup_existing", True)
+                    logger.warning(f"文件已存在: {filename}, hash={file_hash}")
+                    return existing
+
+                storage_path = os.path.join(kb_dir, f"{file_hash}_{safe_filename}")
+                os.replace(tmp_path, storage_path)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
+
             sql = """
                 INSERT INTO files 
                 (kb_id, filename, file_type, file_size, file_hash, storage_path, status)
@@ -118,6 +119,11 @@ class FileService:
             
             # 解析文件
             content = parser.parse(file_obj.storage_path)
+
+            if not content or not str(content).strip():
+                raise ValueError(
+                    "文件解析后内容为空：该PDF可能是扫描件/图片版且当前OCR不可用。请安装Tesseract中文语言包(chi_sim)后重试，或先将PDF转换为可复制文本版本。"
+                )
             
             # 更新状态为已解析
             await self.update_file_status(file_id, 'parsed')

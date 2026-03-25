@@ -166,7 +166,7 @@ class ModelManager:
             统计数据
         """
         try:
-            from app.services.model_scanner import model_scanner
+            from app.services.model.model_scanner import model_scanner
             
             embedding_models = model_scanner.scan_embedding_models()
             llm_models = model_scanner.scan_llm_models()

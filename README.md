@@ -48,20 +48,20 @@ MyRAG/
 │   ├── main.py                     # FastAPI 应用入口
 │   ├── config.yaml                 # 唯一 YAML 配置文件
 │   ├── requirements.txt            # Python 依赖
-│   ├── app/
-│   │   ├── api/                    # API 路由层
-│   │   │   ├── knowledge_base.py   # 知识库管理
-│   │   │   ├── assistant.py        # 智能助手
-│   │   │   ├── conversation.py     # 对话管理
-│   │   │   ├── models.py           # 模型管理
-│   │   │   ├── agent.py            # Agent 智能体
-│   │   │   └── websocket.py        # WebSocket
-│   │   ├── services/               # 业务逻辑层 (18+ 服务)
-│   │   ├── models/                 # Pydantic 数据模型
-│   │   ├── core/                   # 核心模块 (配置/数据库/依赖注入)
-│   │   ├── utils/                  # 工具函数 (日志/解析/分割/验证)
-│   │   └── websocket/              # WebSocket 管理器
-│   └── scripts/                    # 数据库初始化脚本
+│   └── app/
+│       ├── api/                    # API 路由层
+│       │   ├── knowledge_base.py   # 知识库管理
+│       │   ├── assistant.py        # 智能助手
+│       │   ├── conversation.py     # 对话管理
+│       │   ├── models.py           # 模型管理
+│       │   ├── agent.py            # Agent 智能体
+│       │   ├── lora.py             # LoRA 微调
+│       │   └── websocket.py        # WebSocket
+│       ├── services/               # 业务逻辑层 (18+ 服务)
+│       ├── models/                 # Pydantic 数据模型 (含 LoRA schemas)
+│       ├── core/                   # 核心模块 (配置/数据库/依赖注入)
+│       ├── utils/                  # 工具函数 (日志/解析/分割/验证)
+│       └── websocket/              # WebSocket 管理器
 │
 ├── Frontend/                        # 前端界面 (纯 HTML/CSS/JS)
 │   ├── knowledge-base.html         # 知识库管理
@@ -69,10 +69,22 @@ MyRAG/
 │   ├── chat.html                   # 对话界面
 │   ├── agent.html                  # Agent 交互
 │   ├── model-management.html       # 模型管理
+│   ├── lora-training.html          # LoRA 训练
 │   ├── css/                        # 样式文件
 │   └── js/                         # 前端逻辑
 │
-├── data/                            # 运行时数据 (统一目录)
+├── docs/                            # 📁 统一文档中心
+│   ├── agent/                      # Agent 模块文档
+│   ├── lora/                       # LoRA 微调文档
+│   └── 流程图/                      # 架构流程图
+│
+├── test/                            # 📁 统一测试套件
+│
+├── scripts/                         # 📁 统一脚本中心
+│   ├── db/                         # 数据库脚本 (init.sql, 迁移)
+│   └── ops/                        # 运维脚本 (测试/模型预加载)
+│
+├── data/                            # 运行时数据 (gitignored)
 │   ├── knowledge_base/             # 知识库上传文件
 │   ├── vector_db/                  # ChromaDB 向量数据库
 │   ├── logs/                       # 应用日志
@@ -88,15 +100,8 @@ MyRAG/
 │   ├── docker-start.bat            # Docker 管理脚本
 │   └── docker-daemon-config.json   # Docker 守护进程配置
 │
-├── scripts/                         # 工具脚本
-│   ├── run-tests.bat               # 测试运行脚本
-│   ├── manage_transformers.py      # 模型管理工具
-│   └── preload-*.py/sh             # 模型预下载
-│
-├── test/                            # 测试套件
-├── docs/                            # 项目文档
 ├── docker-compose.yml              # Docker 编排 (5 服务)
-├── start.bat                       # 本地启动脚本
+├── start.bat                       # 本地启动脚本 (支持 fast 模式)
 ├── .env.example                    # 环境变量模板
 └── README.md                       # 本文档
 ```
@@ -309,7 +314,6 @@ python scripts/init_db.py
 此脚本会自动:
 - 创建 `myrag` 数据库
 - 创建所有必需的表(knowledge_bases, files, text_chunks, process_logs, assistants)
-- 插入示例智能助手数据
 
 **手动初始化**:
 ```bash

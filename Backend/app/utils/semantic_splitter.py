@@ -116,7 +116,7 @@ class SemanticTextSplitter:
         - 询问LLM: "这两个段落讨论的是同一主题吗？"
         - 如果是，且合并后不超过max_size，则合并
         """
-        from app.services.ollama_llm_service import get_ollama_llm_service
+        from app.services.llm.ollama_llm_service import get_ollama_llm_service
         
         try:
             ollama_service = get_ollama_llm_service()

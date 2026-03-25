@@ -1,7 +1,10 @@
 """知识库API路由"""
+import hashlib
+import json
 from typing import List, Optional
 from pathlib import Path
 import shutil
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, BackgroundTasks, Query
 from app.models.schemas import (
     KnowledgeBaseCreate,
@@ -155,7 +158,7 @@ async def delete_knowledge_base(
         
         # 2. 删除知识图谱数据
         try:
-            from app.services.neo4j_graph_service import get_neo4j_graph_service
+            from app.services.knowledge_graph.neo4j_graph_service import get_neo4j_graph_service
             graph_service = get_neo4j_graph_service()
             deleted_nodes = graph_service.delete_kb_graph(kb_id)
             logger.info(f"✓ 图谱数据已删除: {deleted_nodes} 个节点")
@@ -218,74 +221,156 @@ async def process_file_background(
             client_id, kb_id, "chunking", 30, "正在分块文本..."
         )
         
-        # 根据配置选择分割策略
-        semantic_config = settings.text_processing.semantic_split
+        # 统一使用规则切分（禁用语义切分路径）
+        file_obj = await file_service.get_file(file_id)
+        document_type = None
+        if file_obj and file_obj.file_type:
+            file_type = str(file_obj.file_type).lower().lstrip('.')
+            if file_type in ['py', 'js', 'ts', 'java', 'cpp', 'c', 'go', 'rs', 'sql', 'sh', 'bat']:
+                document_type = 'code'
+            elif file_type in ['html', 'htm', 'xml']:
+                document_type = 'html'
+            elif file_type in ['md', 'markdown']:
+                document_type = 'markdown'
+            elif file_type in ['json', 'jsonl']:
+                document_type = 'json'
+            else:
+                document_type = 'text'
+
+        splitter = TextSplitter(document_type=document_type)
+        chunks = splitter.split_text(content)
+        logger.info(
+            "使用规则切分: file_id=%s, content_len=%s, doc_type=%s, chunks=%s",
+            file_id,
+            len(content),
+            document_type,
+            len(chunks)
+        )
         
-        if semantic_config.enabled and semantic_config.use_for_short_text and len(content) < semantic_config.short_text_threshold:
-            # 短文本使用LLM语义分割
-            from app.utils.semantic_splitter import get_semantic_splitter
-            splitter = get_semantic_splitter()
-            chunks = splitter.split_text(content, use_llm=True)
-            logger.info(f"使用LLM语义分割: file_id={file_id}, content_len={len(content)}, chunks={len(chunks)}")
-        elif semantic_config.enabled:
-            # 长文本使用快速规则分割
-            from app.utils.semantic_splitter import get_semantic_splitter
-            splitter = get_semantic_splitter()
-            chunks = splitter.split_text(content, use_llm=False)
-            logger.info(f"使用规则分割（文本过长）: file_id={file_id}, content_len={len(content)}, chunks={len(chunks)}")
-        else:
-            # 禁用语义分割，使用传统TextSplitter
-            splitter = TextSplitter()
-            chunks = splitter.split_text(content)
-            logger.info(f"使用传统分割: file_id={file_id}, chunks={len(chunks)}")
-        
-        # 3. 生成向量
+        if not chunks:
+            raise ValueError("文件内容为空或未成功切分为文本块")
+
+        # 2.5 切分质量监控
+        if getattr(settings.text_processing, 'split_quality_monitoring_enabled', False):
+            try:
+                lengths = [len(chunk) for chunk in chunks]
+                sorted_lengths = sorted(lengths)
+                p95_index = max(0, min(len(sorted_lengths) - 1, int(len(sorted_lengths) * 0.95) - 1))
+                split_metrics = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "file_id": file_id,
+                    "kb_id": kb_id,
+                    "doc_type": document_type,
+                    "content_length": len(content),
+                    "chunk_count": len(chunks),
+                    "avg_chunk_length": round(sum(lengths) / len(lengths), 2),
+                    "p95_chunk_length": sorted_lengths[p95_index] if sorted_lengths else 0,
+                    "min_chunk_length": min(lengths) if lengths else 0,
+                    "max_chunk_length": max(lengths) if lengths else 0,
+                    "empty_chunk_count": sum(1 for chunk in chunks if not chunk.strip()),
+                    "chunk_size": splitter.chunk_size,
+                    "chunk_overlap": splitter.chunk_overlap
+                }
+
+                metrics_path = Path(settings.text_processing.split_quality_metrics_file)
+                metrics_path.parent.mkdir(parents=True, exist_ok=True)
+                with metrics_path.open('a', encoding='utf-8') as metrics_file:
+                    metrics_file.write(json.dumps(split_metrics, ensure_ascii=False) + "\n")
+            except Exception as metrics_error:
+                logger.warning(f"切分质量监控写入失败: {str(metrics_error)}")
+
+        # 3. 分批生成向量 + 分批入库
         await ws_manager.send_progress(
             client_id, kb_id, "embedding", 50, f"正在生成向量 (共{len(chunks)}块, provider={embedding_provider})..."
         )
-        
-        embeddings = embedding_service.encode(
-            chunks,
-            embedding_model,
-            provider=embedding_provider,
-            batch_size=32,
-            show_progress=False
-        )
-        
-        # 4. 存储向量
-        await ws_manager.send_progress(
-            client_id, kb_id, "storing", 80, "正在存储向量..."
-        )
-        
+
+        total_chunks = len(chunks)
+        embedding_batch_size = max(1, int(getattr(settings.embedding, 'batch_size', 32) or 32))
+        ingest_batch_size = max(embedding_batch_size, min(256, embedding_batch_size * 4))
+
         collection_name = f"kb_{kb_id}"
         ids = [f"file_{file_id}_chunk_{i}" for i in range(len(chunks))]
-        metadatas = [
-            {
-                'kb_id': kb_id,
-                'file_id': file_id,
-                'chunk_index': i
-            }
-            for i in range(len(chunks))
-        ]
-        
-        vector_store.add_vectors(
-            collection_name=collection_name,
-            ids=ids,
-            embeddings=embeddings,
-            documents=chunks,
-            metadatas=metadatas
-        )
-        
-        # 4.5 保存文本块到MySQL数据库
+        inserted_vector_ids: List[str] = []
+
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            for i, chunk in enumerate(chunks):
-                cursor.execute(
-                    """INSERT INTO text_chunks (kb_id, file_id, chunk_index, content, vector_id)
-                       VALUES (%s, %s, %s, %s, %s)""",
-                    (kb_id, file_id, i, chunk, ids[i])
-                )
-            cursor.close()
+            try:
+                for start in range(0, total_chunks, ingest_batch_size):
+                    end = min(start + ingest_batch_size, total_chunks)
+                    batch_chunks = chunks[start:end]
+                    batch_ids = ids[start:end]
+
+                    batch_embeddings, cache_stats = embedding_service.encode_with_cache(
+                        batch_chunks,
+                        embedding_model,
+                        provider=embedding_provider,
+                        batch_size=embedding_batch_size,
+                        show_progress=False
+                    )
+
+                    batch_metadatas = [
+                        {
+                            'kb_id': kb_id,
+                            'file_id': file_id,
+                            'chunk_index': start + offset,
+                            'text_hash': hashlib.sha1(chunk.encode('utf-8')).hexdigest()
+                        }
+                        for offset, chunk in enumerate(batch_chunks)
+                    ]
+
+                    vector_store.add_vectors(
+                        collection_name=collection_name,
+                        ids=batch_ids,
+                        embeddings=batch_embeddings,
+                        documents=batch_chunks,
+                        metadatas=batch_metadatas
+                    )
+                    inserted_vector_ids.extend(batch_ids)
+
+                    mysql_rows = [
+                        (kb_id, file_id, start + offset, chunk, batch_ids[offset])
+                        for offset, chunk in enumerate(batch_chunks)
+                    ]
+                    cursor.executemany(
+                        """INSERT INTO text_chunks (kb_id, file_id, chunk_index, content, vector_id)
+                           VALUES (%s, %s, %s, %s, %s)""",
+                        mysql_rows
+                    )
+
+                    processed = end
+                    progress_ratio = processed / total_chunks
+                    progress_value = 50 + int(30 * progress_ratio)
+                    await ws_manager.send_progress(
+                        client_id,
+                        kb_id,
+                        "embedding",
+                        progress_value,
+                        (
+                            f"向量化进度 {processed}/{total_chunks} "
+                            f"(cache_hit={cache_stats.get('cache_hit', 0)}, "
+                            f"hit_rate={cache_stats.get('hit_rate', 0)})"
+                        )
+                    )
+            except Exception:
+                # MySQL写入失败后，补偿删除本次已写入的向量，避免跨存储不一致
+                if inserted_vector_ids:
+                    try:
+                        vector_store.delete_by_ids(collection_name=collection_name, ids=inserted_vector_ids)
+                    except Exception as rollback_error:
+                        logger.error(
+                            "向量补偿删除失败: kb_id=%s, file_id=%s, vector_count=%s, error=%s",
+                            kb_id,
+                            file_id,
+                            len(inserted_vector_ids),
+                            str(rollback_error),
+                        )
+                raise
+            finally:
+                cursor.close()
+
+        await ws_manager.send_progress(
+            client_id, kb_id, "storing", 80, "向量与文本块存储完成"
+        )
         
         # 5. 更新文件分块数量
         await file_service.update_chunk_count(file_id, len(chunks))
@@ -321,11 +406,14 @@ async def process_file_background(
                 for i in range(len(chunks))
             ]
             
-            # 构建图谱
+            async def _graph_progress(stage: str, pct: int, msg: str):
+                await ws_manager.send_progress(client_id, kb_id, stage, pct, msg)
+
             graph_result = await kb_service.build_knowledge_graph(
                 kb_id=kb_id,
                 chunks=chunks_data,
-                force_rebuild=False  # 不强制重建，增量添加
+                force_rebuild=False,
+                progress_callback=_graph_progress
             )
             
             if graph_result.get('status') == 'success':
@@ -386,6 +474,26 @@ async def upload_file(
         
         if not file_obj:
             raise HTTPException(status_code=500, detail="文件保存失败")
+
+        is_dedup_existing = bool(getattr(file_obj, "_is_dedup_existing", False))
+        already_processed = (
+            file_obj.status == "completed" and int(getattr(file_obj, "chunk_count", 0) or 0) > 0
+        )
+        if is_dedup_existing and already_processed:
+            logger.info(
+                "重复文件已完成入库，跳过后台处理: kb_id=%s, file_id=%s, filename=%s, chunks=%s",
+                kb_id,
+                file_obj.id,
+                file_obj.filename,
+                file_obj.chunk_count,
+            )
+            return FileUploadResponse(
+                id=file_obj.id,
+                filename=file_obj.filename,
+                file_type=file_obj.file_type,
+                file_size=file_obj.file_size,
+                status=file_obj.status
+            )
         
         # 添加后台任务处理文件
         background_tasks.add_task(
@@ -510,6 +618,20 @@ async def delete_file(
                 logger.info(f"已从向量数据库删除文件向量: file_id={file_id}, count={len(vector_ids)}")
         except Exception as e:
             logger.warning(f"删除向量时出错: {str(e)}")
+
+        # 删除Neo4j中该文件对应的图谱证据
+        try:
+            graph_cleanup = await kb_service.delete_file_graph(kb_id=kb_id, file_id=file_id)
+            logger.info(
+                "文件图谱清理完成: kb_id=%s, file_id=%s, enabled=%s, available=%s, counters=%s",
+                kb_id,
+                file_id,
+                graph_cleanup.get('enabled'),
+                graph_cleanup.get('available'),
+                graph_cleanup.get('counters', {}),
+            )
+        except Exception as e:
+            logger.warning(f"清理文件图谱时出错: {str(e)}")
         
         # 删除数据库中的text_chunks记录（会被外键级联删除，但为了确保可以手动删除）
         try:
@@ -675,6 +797,39 @@ async def get_graph_stats(
         raise
     except Exception as e:
         logger.error(f"获取图谱统计失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{kb_id}/graph/preview")
+async def get_graph_preview(
+    kb_id: int,
+    limit_nodes: int = Query(80, ge=10, le=300, description="预览节点数量上限"),
+    limit_edges: int = Query(160, ge=20, le=800, description="预览边数量上限"),
+    include_all: bool = Query(False, description="是否返回全量实体关系图（不抽样）"),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service)
+):
+    """获取知识库的知识图谱预览数据（节点和关系边）。"""
+    try:
+        kb = await kb_service.get_knowledge_base(kb_id)
+        if not kb:
+            raise HTTPException(status_code=404, detail="知识库不存在")
+
+        preview = await kb_service.get_graph_preview(
+            kb_id=kb_id,
+            limit_nodes=limit_nodes,
+            limit_edges=limit_edges,
+            include_all=include_all
+        )
+
+        return {
+            "kb_id": kb_id,
+            "kb_name": kb.name,
+            "preview": preview
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取图谱预览失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

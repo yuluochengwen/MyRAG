@@ -7,7 +7,7 @@
   <!-- 引入Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- 引入Font Awesome -->
-  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet" onerror="this.onerror=null;this.href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';">
   <!-- 引入自定义样式 -->
   <link rel="stylesheet" href="css/agent.css">
   
@@ -51,7 +51,7 @@
         <nav class="hidden md:flex items-center space-x-1">
           <a href="knowledge-base.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">知识库</a>
           <a href="intelligent-assistant.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">智能助手</a>
-          <a href="agent.html" class="nav-link nav-active px-4 py-2 font-medium border-b-2 transition-custom">Agent</a>
+          <a href="agent-demo.html" class="nav-link nav-active px-4 py-2 font-medium border-b-2 transition-custom">Agent</a>
           <a href="model-management.html" class="nav-link px-4 py-2 font-medium border-b-2 border-transparent hover:border-primary hover:text-primary transition-custom">模型管理</a>
         </nav>
         
@@ -77,7 +77,7 @@
         <nav class="flex flex-col space-y-2">
           <a href="knowledge-base.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">知识库</a>
           <a href="intelligent-assistant.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">智能助手</a>
-          <a href="agent.html" class="mobile-nav-link nav-active px-4 py-3 font-medium bg-primary/5 rounded-lg text-primary transition-custom">Agent</a>
+          <a href="agent-demo.html" class="mobile-nav-link nav-active px-4 py-3 font-medium bg-primary/5 rounded-lg text-primary transition-custom">Agent</a>
           <a href="model-management.html" class="mobile-nav-link px-4 py-3 font-medium hover:bg-gray-100 rounded-lg transition-custom">模型管理</a>
         </nav>
       </div>
@@ -105,7 +105,7 @@
       <div class="max-w-3xl">
         <h2 class="text-2xl font-bold mb-4">什么是Agent？</h2>
         <p class="text-gray-700 mb-6">Agent是一种能够自主理解、规划和执行复杂任务的高级AI助手。它可以根据用户的目标，自动分解任务、调用工具、整合信息，并提供最终结果。</p>
-        <button class="px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom shadow-md hover:shadow-lg">
+        <button id="btn-open-agent-workbench" class="px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition-custom shadow-md hover:shadow-lg">
           <i class="fa fa-plus mr-2"></i> 创建第一个Agent
         </button>
       </div>
@@ -154,7 +154,7 @@
             <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">文档处理</span>
             <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">信息提取</span>
           </div>
-          <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
+          <button class="btn-use-agent-template px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
             使用模板
           </button>
         </div>
@@ -171,7 +171,7 @@
             <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">代码生成</span>
             <span class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">调试</span>
           </div>
-          <button class="px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
+          <button class="btn-use-agent-template px-3 py-1 bg-primary text-white text-sm rounded-lg hover:bg-primary/90 transition-custom">
             使用模板
           </button>
         </div>
@@ -213,6 +213,16 @@
     // 移动端菜单切换
     document.getElementById('mobile-menu-btn')?.addEventListener('click', function() {
       document.getElementById('mobile-menu').classList.toggle('hidden');
+    });
+
+    // 该页面为介绍页，交互能力在 agent-demo.html 中实现
+    const goAgentWorkbench = () => {
+      window.location.href = 'agent-demo.html';
+    };
+
+    document.getElementById('btn-open-agent-workbench')?.addEventListener('click', goAgentWorkbench);
+    document.querySelectorAll('.btn-use-agent-template').forEach((btn) => {
+      btn.addEventListener('click', goAgentWorkbench);
     });
   </script>
 </body>

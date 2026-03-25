@@ -1,6 +1,6 @@
 """LoRA 推理服务"""
 import torch
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 from collections import OrderedDict
 
@@ -158,9 +158,12 @@ class LoRAInferenceService:
     
     async def generate(
         self,
-        model,
-        tokenizer,
-        prompt: str,
+        model=None,
+        tokenizer=None,
+        prompt: Optional[str] = None,
+        lora_model_id: Optional[int] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        base_model_name: Optional[str] = None,
         max_length: int = 512,
         temperature: float = 0.7,
         top_p: float = 0.9,
@@ -170,9 +173,12 @@ class LoRAInferenceService:
         使用模型生成响应
         
         Args:
-            model: 模型（可以是基座模型或 LoRA 模型）
-            tokenizer: Tokenizer
-            prompt: 输入提示
+            model: 模型（可选，直接推理模式）
+            tokenizer: Tokenizer（可选，直接推理模式）
+            prompt: 输入提示（可选，直接推理模式）
+            lora_model_id: LoRA 模型 ID（可选，业务模式）
+            messages: 对话消息列表（可选，业务模式）
+            base_model_name: 基座模型名称（可选，业务模式）
             max_length: 最大生成长度
             temperature: 温度参数
             top_p: Top-p 采样参数
@@ -180,6 +186,41 @@ class LoRAInferenceService:
         Returns:
             生成的文本
         """
+        try:
+            # 兼容 chat_service 调用路径：传入 lora_model_id + messages
+            if lora_model_id is not None and messages is not None:
+                resolved_base_model_name = base_model_name or await self._resolve_base_model_name(lora_model_id)
+                model, tokenizer = await self.load_lora_model(lora_model_id, resolved_base_model_name)
+                prompt = self._build_prompt_from_messages(messages)
+
+            if model is None or tokenizer is None or prompt is None:
+                raise ValueError("generate 调用参数不完整，需要 model/tokenizer/prompt 或 lora_model_id/messages")
+
+            return await self._generate_with_model(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                max_length=max_length,
+                temperature=temperature,
+                top_p=top_p,
+                **kwargs
+            )
+
+        except Exception as e:
+            logger.error(f"生成响应失败: {str(e)}")
+            raise
+
+    async def _generate_with_model(
+        self,
+        model,
+        tokenizer,
+        prompt: str,
+        max_length: int = 512,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        **kwargs
+    ) -> str:
+        """使用已加载模型进行文本生成。"""
         try:
             # Tokenize 输入
             inputs = tokenizer(prompt, return_tensors="pt")
@@ -210,6 +251,28 @@ class LoRAInferenceService:
         except Exception as e:
             logger.error(f"生成响应失败: {str(e)}")
             raise
+
+    async def _resolve_base_model_name(self, lora_model_id: int) -> str:
+        """根据 LoRA 模型 ID 获取对应基座模型名称。"""
+        sql = "SELECT base_model_name FROM lora_models WHERE id = %s"
+        result = await self.db.execute_query(sql, (lora_model_id,))
+        if not result:
+            raise ValueError(f"LoRA 模型不存在: {lora_model_id}")
+        base_model_name = result[0].get("base_model_name")
+        if not base_model_name:
+            raise ValueError(f"LoRA 模型缺少 base_model_name: {lora_model_id}")
+        return base_model_name
+
+    def _build_prompt_from_messages(self, messages: List[Dict[str, str]]) -> str:
+        """将消息列表转换为简单对话提示词。"""
+        lines = []
+        for message in messages:
+            role = (message or {}).get("role", "user")
+            content = (message or {}).get("content", "")
+            role_text = "System" if role == "system" else "Assistant" if role == "assistant" else "User"
+            lines.append(f"{role_text}: {content}")
+        lines.append("Assistant:")
+        return "\n\n".join(lines)
     
     async def unload_lora_model(self, lora_model_id: int, base_model_name: str):
         """
@@ -235,3 +298,17 @@ class LoRAInferenceService:
         self.lora_model_cache.clear()
         self.tokenizer_cache.clear()
         logger.info("模型缓存已清空")
+
+
+# 全局实例（懒加载）
+_lora_inference_service_instance = None
+
+
+def get_lora_inference_service() -> LoRAInferenceService:
+    """获取 LoRA 推理服务单例（懒加载）"""
+    global _lora_inference_service_instance
+    if _lora_inference_service_instance is None:
+        from app.core.database import db_manager
+
+        _lora_inference_service_instance = LoRAInferenceService(db_manager)
+    return _lora_inference_service_instance

@@ -26,6 +26,12 @@ class Neo4jGraphService:
         self.uri = uri or settings.neo4j.uri
         self.username = username or settings.neo4j.username
         self.password = password or settings.neo4j.password
+        self._last_relation_import_stats: Dict[str, int] = {
+            "attempted": 0,
+            "matched": 0,
+            "imported": 0,
+            "unmatched": 0
+        }
         
         try:
             self.driver: Driver = GraphDatabase.driver(
@@ -85,6 +91,9 @@ class Neo4jGraphService:
                 session.run(
                     "CREATE INDEX fact_key IF NOT EXISTS FOR (f:Fact) ON (f.fact_key)"
                 )
+                session.run(
+                    "CREATE INDEX run_id IF NOT EXISTS FOR (r:GraphBuildRun) ON (r.run_id)"
+                )
                 
             logger.info("Neo4j索引创建完成")
             
@@ -120,20 +129,43 @@ class Neo4jGraphService:
             "normalized": normalized_candidates
         }
 
+    def _extract_code_like_keys(self, normalized_candidates: List[str]) -> List[str]:
+        """提取可用于代码型实体匹配的键（例如 p1127、abc2024）。"""
+        code_keys: List[str] = []
+        for item in normalized_candidates:
+            key = str(item or "").strip()
+            if not key:
+                continue
+            # 兼容短码（如 n47），但保持严格形态，降低误召回：
+            # 1) 字母前缀 + 至少2位数字（n47, p1127, abc2024）
+            # 2) 至少2位数字 + 字母后缀（1127a）
+            if not (
+                re.fullmatch(r"[a-z]{1,4}\d{2,10}[a-z]{0,2}", key)
+                or re.fullmatch(r"\d{2,10}[a-z]{1,4}", key)
+            ):
+                continue
+            if key not in code_keys:
+                code_keys.append(key)
+        return code_keys
+
     def _query_entity_with_relations(self, session: Session, kb_id: int, where_clause: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         query = f"""
          MATCH (e:Entity {{kb_id: $kb_id}})
          WHERE {where_clause}
         OPTIONAL MATCH (e)-[r_out:RELATES]->(target:Entity)
         OPTIONAL MATCH (source:Entity)-[r_in:RELATES]->(e)
+                WITH e,
+                         collect(DISTINCT {{target: target.name, relation: r_out.type}}) as out_relations,
+                         collect(DISTINCT {{source: source.name, relation: r_in.type}}) as in_relations
         RETURN e.name as name,
              e.canonical_name as canonical_name,
              e.normalized_name as normalized_name,
                e.type as type,
              e.labels as labels,
                properties(e) as attributes,
-               collect(DISTINCT {{target: target.name, relation: r_out.type}}) as out_relations,
-               collect(DISTINCT {{source: source.name, relation: r_in.type}}) as in_relations
+                             out_relations,
+                             in_relations
+                ORDER BY coalesce(e.mention_count, 0) DESC, coalesce(e.confidence, 0.0) DESC, size(coalesce(e.name, "")) ASC
         LIMIT 1
         """
 
@@ -208,6 +240,7 @@ class Neo4jGraphService:
                 e.labels = coalesce(entity.labels, e.labels, [entity.type]),
                 e.aliases = coalesce(entity.attributes.aliases, e.aliases, []),
                 e.normalized_name = coalesce(entity.normalized_name, e.normalized_name),
+                e.first_run_id = coalesce(e.first_run_id, $run_id),
                 e.confidence = coalesce(entity.confidence, e.confidence, 0.7),
                 e.mention_count = coalesce(entity.attributes.mention_count, e.mention_count, 0),
                 e.last_run_id = $run_id,
@@ -278,14 +311,12 @@ class Neo4jGraphService:
         include_fact_nodes: bool = True
     ) -> int:
         """
-        批量导入关系（性能优化）
+        批量导入关系（性能优化版）
         
-        Args:
-            kb_id: 知识库ID
-            relations: 关系列表 [{'source': '...', 'target': '...', 'relation': '...'}, ...]
-            
-        Returns:
-            成功导入的数量
+        优化点:
+        1. 删除独立的 match_count_query，改用 summary.counters 统计，避免双重 MATCH
+        2. 优先用 canonical_name（有复合索引 entity_kb_canonical）匹配，
+           仅对匹配不上的回退到 name/aliases，利用索引加速
         """
         try:
             normalized_relations: List[Dict[str, Any]] = []
@@ -322,14 +353,15 @@ class Neo4jGraphService:
             if not normalized_relations:
                 return 0
 
+            # 优先用 canonical_name 索引匹配（覆盖 entity_kb_canonical 复合索引）
+            # UNION 确保 name/aliases 回退也能命中，但 canonical_name 分支走索引
             relation_query = """
             UNWIND $relations AS rel
-            MATCH (s:Entity {kb_id: $kb_id})
-            WHERE s.name = rel.source OR s.canonical_name = rel.source OR rel.source IN coalesce(s.aliases, [])
-            MATCH (t:Entity {kb_id: $kb_id})
-            WHERE t.name = rel.target OR t.canonical_name = rel.target OR rel.target IN coalesce(t.aliases, [])
+            MATCH (s:Entity {kb_id: $kb_id, canonical_name: rel.source})
+            MATCH (t:Entity {kb_id: $kb_id, canonical_name: rel.target})
             MERGE (s)-[r:RELATES {type: rel.relation}]->(t)
             SET r.updated_at = datetime(),
+                r.first_run_id = coalesce(r.first_run_id, $run_id),
                 r.confidence = coalesce(rel.confidence, r.confidence, 0.6),
                 r.evidence_count = coalesce(r.evidence_count, 0) + coalesce(rel.evidence_count, 1),
                 r.chunk_ids = coalesce(rel.chunk_ids, r.chunk_ids, []),
@@ -338,20 +370,18 @@ class Neo4jGraphService:
             """
 
             fact_query = """
-
-            MERGE (f:Fact {fact_key: coalesce(s.canonical_name, s.name) + '|' + rel.relation + '|' + coalesce(t.canonical_name, t.name), kb_id: $kb_id})
+            MERGE (f:Fact {fact_key: s.canonical_name + '|' + rel.relation + '|' + t.canonical_name, kb_id: $kb_id})
             SET f.subject = rel.source,
                 f.predicate = rel.relation,
                 f.object = rel.target,
+                f.first_run_id = coalesce(f.first_run_id, $run_id),
                 f.confidence = coalesce(rel.confidence, f.confidence, 0.6),
                 f.evidence_count = coalesce(f.evidence_count, 0) + coalesce(rel.evidence_count, 1),
                 f.attributes_json = coalesce(rel.attributes_json, f.attributes_json, '{}'),
                 f.updated_at = datetime(),
                 f.last_run_id = $run_id
-
             MERGE (f)-[:SUBJECT]->(s)
             MERGE (f)-[:OBJECT]->(t)
-
             WITH rel, f
             UNWIND coalesce(rel.chunk_ids, []) AS chunk_id
             MERGE (c:Chunk {chunk_id: chunk_id, kb_id: $kb_id})
@@ -360,20 +390,45 @@ class Neo4jGraphService:
             ON MATCH SET sb.weight = coalesce(sb.weight, 0) + 1, sb.last_run_id = $run_id, sb.updated_at = datetime()
             """
 
-            query = relation_query + (fact_query if include_fact_nodes else "")
+            # name/aliases 回退查询（处理 canonical_name 不一致的边缘情况）
+            fallback_query = """
+            UNWIND $relations AS rel
+            MATCH (s:Entity {kb_id: $kb_id})
+            WHERE s.name = rel.source OR rel.source IN coalesce(s.aliases, [])
+            MATCH (t:Entity {kb_id: $kb_id})
+            WHERE t.name = rel.target OR rel.target IN coalesce(t.aliases, [])
+            MERGE (s)-[r:RELATES {type: rel.relation}]->(t)
+            SET r.updated_at = datetime(),
+                r.first_run_id = coalesce(r.first_run_id, $run_id),
+                r.confidence = coalesce(rel.confidence, r.confidence, 0.6),
+                r.evidence_count = coalesce(r.evidence_count, 0) + coalesce(rel.evidence_count, 1),
+                r.chunk_ids = coalesce(rel.chunk_ids, r.chunk_ids, []),
+                r.attributes_json = coalesce(rel.attributes_json, r.attributes_json, '{}'),
+                r.last_run_id = $run_id
+            """
+
+            primary_query = relation_query + (fact_query if include_fact_nodes else "")
             
             count = 0
             batch_size = 1000
+            attempted_total = len(normalized_relations)
+            relationships_created = 0
             
             with self.driver.session() as session:
                 for i in range(0, len(normalized_relations), batch_size):
                     batch = normalized_relations[i:i + batch_size]
-                    # 使用显式事务确保提交
                     tx = session.begin_transaction()
                     try:
-                        result = tx.run(query, relations=batch, kb_id=kb_id, run_id=run_id)
-                        # 消费结果确保查询执行完成
+                        # 第一轮: canonical_name 精确匹配（走索引，快）
+                        result = tx.run(primary_query, relations=batch, kb_id=kb_id, run_id=run_id)
                         summary = result.consume()
+                        relationships_created += summary.counters.relationships_created
+
+                        # 第二轮: name/aliases 回退（仅对未命中的关系生效，MERGE 幂等不会重复创建）
+                        fallback_result = tx.run(fallback_query, relations=batch, kb_id=kb_id, run_id=run_id)
+                        fallback_summary = fallback_result.consume()
+                        relationships_created += fallback_summary.counters.relationships_created
+
                         tx.commit()
                         count += len(batch)
                         logger.debug(f"关系批次 {i//batch_size + 1} 提交: {len(batch)} 个")
@@ -382,12 +437,19 @@ class Neo4jGraphService:
                         logger.error(f"关系批次 {i//batch_size + 1} 失败: {str(e)}")
                         raise
             
-            # 验证导入结果
             with self.driver.session() as session:
                 verify_query = "MATCH (:Entity {kb_id: $kb_id})-[r:RELATES]->(:Entity {kb_id: $kb_id}) RETURN count(r) as cnt"
                 result = session.run(verify_query, kb_id=kb_id)
                 actual_count = result.single()["cnt"]
-                logger.info(f"批量导入关系成功: kb_id={kb_id}, 声称导入={count}, Neo4j实际={actual_count}")
+                logger.info(f"批量导入关系成功: kb_id={kb_id}, 提交={count}, 新建关系={relationships_created}, Neo4j总关系={actual_count}")
+
+            self._last_relation_import_stats = {
+                "attempted": attempted_total,
+                "matched": attempted_total,
+                "imported": count,
+                "relationships_created": relationships_created,
+                "unmatched": 0
+            }
             
             return count
             
@@ -411,6 +473,10 @@ class Neo4jGraphService:
             MERGE (c:Chunk {chunk_id: chunk.chunk_id, kb_id: $kb_id})
             SET c.file_id = chunk.file_id,
                 c.chunk_index = chunk.chunk_index,
+                c.fingerprint = coalesce(chunk.fingerprint, c.fingerprint),
+                c.preview = coalesce(chunk.preview, c.preview),
+                c.char_length = coalesce(chunk.char_length, c.char_length),
+                c.first_run_id = coalesce(c.first_run_id, $run_id),
                 c.updated_at = datetime(),
                 c.last_run_id = $run_id
             """
@@ -436,6 +502,156 @@ class Neo4jGraphService:
         except Exception as e:
             logger.error(f"批量导入文本块失败: {str(e)}")
             return 0
+
+    def get_chunk_fingerprint_map(self, kb_id: int, chunk_ids: List[str]) -> Dict[str, str]:
+        """查询已入库 chunk 的 fingerprint，用于幂等增量构建。"""
+        if not chunk_ids:
+            return {}
+        try:
+            query = """
+            UNWIND $chunk_ids AS chunk_id
+            MATCH (c:Chunk {kb_id: $kb_id, chunk_id: chunk_id})
+            RETURN c.chunk_id as chunk_id, c.fingerprint as fingerprint
+            """
+            mapping: Dict[str, str] = {}
+            with self.driver.session() as session:
+                records = session.run(query, kb_id=kb_id, chunk_ids=chunk_ids)
+                for record in records:
+                    key = record.get("chunk_id")
+                    value = record.get("fingerprint")
+                    if key and value:
+                        mapping[str(key)] = str(value)
+            return mapping
+        except Exception as error:
+            logger.warning("查询 chunk fingerprint 失败: %s", str(error))
+            return {}
+
+    def start_graph_build_run(self, kb_id: int, run_id: str, total_chunks: int, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """记录图构建任务开始。"""
+        try:
+            query = """
+            MERGE (r:GraphBuildRun {run_id: $run_id, kb_id: $kb_id})
+            SET r.status = 'running',
+                r.total_chunks = $total_chunks,
+                r.metadata_json = $metadata_json,
+                r.started_at = datetime(),
+                r.updated_at = datetime()
+            """
+            with self.driver.session() as session:
+                session.run(
+                    query,
+                    kb_id=kb_id,
+                    run_id=run_id,
+                    total_chunks=int(total_chunks),
+                    metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
+                ).consume()
+        except Exception as error:
+            logger.warning("记录图构建 run 开始失败: %s", str(error))
+
+    def finish_graph_build_run(self, kb_id: int, run_id: str, stats: Optional[Dict[str, Any]] = None) -> None:
+        """记录图构建任务成功完成。"""
+        try:
+            query = """
+            MATCH (r:GraphBuildRun {run_id: $run_id, kb_id: $kb_id})
+            SET r.status = 'success',
+                r.stats_json = $stats_json,
+                r.finished_at = datetime(),
+                r.updated_at = datetime()
+            """
+            with self.driver.session() as session:
+                session.run(
+                    query,
+                    kb_id=kb_id,
+                    run_id=run_id,
+                    stats_json=json.dumps(stats or {}, ensure_ascii=False),
+                ).consume()
+        except Exception as error:
+            logger.warning("记录图构建 run 完成失败: %s", str(error))
+
+    def fail_graph_build_run(self, kb_id: int, run_id: str, error_message: str, stats: Optional[Dict[str, Any]] = None) -> None:
+        """记录图构建任务失败。"""
+        try:
+            query = """
+            MATCH (r:GraphBuildRun {run_id: $run_id, kb_id: $kb_id})
+            SET r.status = 'failed',
+                r.error_message = $error_message,
+                r.stats_json = $stats_json,
+                r.finished_at = datetime(),
+                r.updated_at = datetime()
+            """
+            with self.driver.session() as session:
+                session.run(
+                    query,
+                    kb_id=kb_id,
+                    run_id=run_id,
+                    error_message=str(error_message)[:4000],
+                    stats_json=json.dumps(stats or {}, ensure_ascii=False),
+                ).consume()
+        except Exception as error:
+            logger.warning("记录图构建 run 失败失败: %s", str(error))
+
+    def rollback_run(self, kb_id: int, run_id: str) -> Dict[str, int]:
+        """回滚当前 run 新增的数据（尽量不影响历史节点）。"""
+        counters = {"relations": 0, "entities": 0, "chunks": 0, "facts": 0}
+        try:
+            with self.driver.session() as session:
+                rel_record = session.run(
+                    """
+                    MATCH (:Entity {kb_id: $kb_id})-[r:RELATES {first_run_id: $run_id}]->(:Entity {kb_id: $kb_id})
+                    WITH collect(r) as rels, count(r) as cnt
+                    FOREACH (rel IN rels | DELETE rel)
+                    RETURN cnt as deleted
+                    """,
+                    kb_id=kb_id,
+                    run_id=run_id,
+                ).single()
+                counters["relations"] = int(rel_record["deleted"]) if rel_record else 0
+
+                fact_record = session.run(
+                    """
+                    MATCH (f:Fact {kb_id: $kb_id, first_run_id: $run_id})
+                    WITH collect(f) as facts, count(f) as cnt
+                    FOREACH (node IN facts | DETACH DELETE node)
+                    RETURN cnt as deleted
+                    """,
+                    kb_id=kb_id,
+                    run_id=run_id,
+                ).single()
+                counters["facts"] = int(fact_record["deleted"]) if fact_record else 0
+
+                entity_record = session.run(
+                    """
+                    MATCH (e:Entity {kb_id: $kb_id, first_run_id: $run_id})
+                    WITH collect(e) as entities, count(e) as cnt
+                    FOREACH (node IN entities | DETACH DELETE node)
+                    RETURN cnt as deleted
+                    """,
+                    kb_id=kb_id,
+                    run_id=run_id,
+                ).single()
+                counters["entities"] = int(entity_record["deleted"]) if entity_record else 0
+
+                chunk_record = session.run(
+                    """
+                    MATCH (c:Chunk {kb_id: $kb_id, first_run_id: $run_id})
+                    WITH collect(c) as chunks, count(c) as cnt
+                    FOREACH (node IN chunks | DETACH DELETE node)
+                    RETURN cnt as deleted
+                    """,
+                    kb_id=kb_id,
+                    run_id=run_id,
+                ).single()
+                counters["chunks"] = int(chunk_record["deleted"]) if chunk_record else 0
+
+            logger.warning("图构建 run 回滚完成: kb_id=%s, run_id=%s, counters=%s", kb_id, run_id, counters)
+            return counters
+        except Exception as error:
+            logger.error("图构建 run 回滚失败: %s", str(error))
+            return counters
+
+    def get_last_relation_import_stats(self) -> Dict[str, int]:
+        """获取最近一次关系导入统计。"""
+        return dict(self._last_relation_import_stats)
     
     def find_related_entities(
         self,
@@ -590,6 +806,19 @@ class Neo4jGraphService:
                         split_match['matched_entity'] = split_match.get('name')
                         return split_match
 
+                code_like_keys = self._extract_code_like_keys(normalized_candidates)
+                if code_like_keys:
+                    code_match = self._query_entity_with_relations(
+                        session=session,
+                        kb_id=kb_id,
+                        where_clause="any(code_key IN $code_like_keys WHERE e.normalized_name CONTAINS code_key)",
+                        params={"code_like_keys": code_like_keys}
+                    )
+                    if code_match:
+                        code_match['match_stage'] = 'code_contains'
+                        code_match['matched_entity'] = code_match.get('name')
+                        return code_match
+
                 return None
 
         except Exception as e:
@@ -669,6 +898,114 @@ class Neo4jGraphService:
         except Exception as e:
             logger.error(f"删除图谱数据失败: {str(e)}")
             return 0
+
+    def delete_file_graph(self, kb_id: int, file_id: int) -> Dict[str, int]:
+        """删除指定文件在图谱中的证据并清理孤立关系/节点。"""
+        counters = {
+            "chunks": 0,
+            "relations_touched": 0,
+            "relations_deleted": 0,
+            "facts_deleted": 0,
+            "entities_deleted": 0,
+        }
+
+        try:
+            with self.driver.session() as session:
+                tx = session.begin_transaction()
+                try:
+                    chunk_record = tx.run(
+                        """
+                        MATCH (c:Chunk {kb_id: $kb_id, file_id: $file_id})
+                        WITH collect(c) as chunks, collect(c.chunk_id) as chunk_ids, count(c) as chunk_count
+                        FOREACH (chunk IN chunks | DETACH DELETE chunk)
+                        RETURN chunk_count as deleted_chunks, chunk_ids as chunk_ids
+                        """,
+                        kb_id=kb_id,
+                        file_id=file_id,
+                    ).single()
+
+                    chunk_ids = list((chunk_record.get("chunk_ids") if chunk_record else []) or [])
+                    counters["chunks"] = int(chunk_record.get("deleted_chunks") or 0) if chunk_record else 0
+
+                    if chunk_ids:
+                        touched_record = tx.run(
+                            """
+                            MATCH (:Entity {kb_id: $kb_id})-[r:RELATES]->(:Entity {kb_id: $kb_id})
+                            WHERE any(chunk_id IN coalesce(r.chunk_ids, []) WHERE chunk_id IN $chunk_ids)
+                            WITH r, [chunk_id IN coalesce(r.chunk_ids, []) WHERE NOT chunk_id IN $chunk_ids] as remaining_chunk_ids
+                            SET r.chunk_ids = remaining_chunk_ids,
+                                r.evidence_count = CASE
+                                    WHEN size(remaining_chunk_ids) = 0 THEN 0
+                                    ELSE size(remaining_chunk_ids)
+                                END,
+                                r.updated_at = datetime()
+                            RETURN count(r) as touched
+                            """,
+                            kb_id=kb_id,
+                            chunk_ids=chunk_ids,
+                        ).single()
+                        counters["relations_touched"] = int(touched_record.get("touched") or 0) if touched_record else 0
+
+                    deleted_rel_record = tx.run(
+                        """
+                        MATCH (:Entity {kb_id: $kb_id})-[r:RELATES]->(:Entity {kb_id: $kb_id})
+                        WHERE coalesce(r.evidence_count, 0) = 0 OR size(coalesce(r.chunk_ids, [])) = 0
+                        WITH collect(r) as relations, count(r) as deleted_count
+                        FOREACH (rel IN relations | DELETE rel)
+                        RETURN deleted_count as deleted
+                        """,
+                        kb_id=kb_id,
+                    ).single()
+                    counters["relations_deleted"] = int(deleted_rel_record.get("deleted") or 0) if deleted_rel_record else 0
+
+                    deleted_fact_record = tx.run(
+                        """
+                        MATCH (f:Fact {kb_id: $kb_id})
+                        OPTIONAL MATCH (f)-[sb:SUPPORTED_BY]->(:Chunk {kb_id: $kb_id})
+                        WITH f, count(sb) as supported_count
+                        WHERE supported_count = 0
+                        WITH collect(f) as facts, count(f) as deleted_count
+                        FOREACH (fact IN facts | DETACH DELETE fact)
+                        RETURN deleted_count as deleted
+                        """,
+                        kb_id=kb_id,
+                    ).single()
+                    counters["facts_deleted"] = int(deleted_fact_record.get("deleted") or 0) if deleted_fact_record else 0
+
+                    deleted_entity_record = tx.run(
+                        """
+                        MATCH (e:Entity {kb_id: $kb_id})
+                        WHERE NOT (:Chunk {kb_id: $kb_id})-[:MENTIONS]->(e)
+                          AND NOT (e)-[:RELATES]-(:Entity {kb_id: $kb_id})
+                          AND NOT (:Fact {kb_id: $kb_id})-[:SUBJECT|OBJECT]->(e)
+                        WITH collect(e) as entities, count(e) as deleted_count
+                        FOREACH (entity IN entities | DETACH DELETE entity)
+                        RETURN deleted_count as deleted
+                        """,
+                        kb_id=kb_id,
+                    ).single()
+                    counters["entities_deleted"] = int(deleted_entity_record.get("deleted") or 0) if deleted_entity_record else 0
+
+                    tx.commit()
+                    logger.info(
+                        "按文件清理图谱完成: kb_id=%s, file_id=%s, counters=%s",
+                        kb_id,
+                        file_id,
+                        counters,
+                    )
+                    return counters
+                except Exception as error:
+                    tx.rollback()
+                    logger.error(
+                        "按文件清理图谱失败(已回滚): kb_id=%s, file_id=%s, error=%s",
+                        kb_id,
+                        file_id,
+                        str(error),
+                    )
+                    raise
+        except Exception as error:
+            logger.error("按文件清理图谱失败: %s", str(error))
+            return counters
     
     def get_graph_stats(self, kb_id: int) -> Dict[str, Any]:
         """
@@ -740,6 +1077,198 @@ class Neo4jGraphService:
                 'fact_count': 0,
                 'entity_types': {},
                 'relation_types': {}
+            }
+
+    def get_graph_preview(
+        self,
+        kb_id: int,
+        limit_nodes: int = 80,
+        limit_edges: int = 160,
+        include_all: bool = False
+    ) -> Dict[str, Any]:
+        """
+        获取图谱预览数据（节点+关系边）。
+
+        Args:
+            kb_id: 知识库ID
+            limit_nodes: 节点数量上限
+            limit_edges: 边数量上限
+
+        Returns:
+            预览数据
+        """
+        limit_nodes = max(10, min(int(limit_nodes or 80), 300))
+        limit_edges = max(20, min(int(limit_edges or 160), 800))
+
+        try:
+            with self.driver.session() as session:
+                if include_all:
+                    edge_query = """
+                    MATCH (s:Entity {kb_id: $kb_id})-[r:RELATES]->(t:Entity {kb_id: $kb_id})
+                    RETURN s.canonical_name as source_id,
+                           coalesce(s.name, s.canonical_name) as source_name,
+                           coalesce(s.type, 'Unknown') as source_type,
+                           coalesce(s.mention_count, 0) as source_mention_count,
+                           t.canonical_name as target_id,
+                           coalesce(t.name, t.canonical_name) as target_name,
+                           coalesce(t.type, 'Unknown') as target_type,
+                           coalesce(t.mention_count, 0) as target_mention_count,
+                           coalesce(r.type, '关联') as relation,
+                           coalesce(r.evidence_count, 1) as evidence_count
+                    ORDER BY evidence_count DESC
+                    """
+                    edge_rows = list(session.run(edge_query, kb_id=kb_id))
+
+                    node_map: Dict[str, Dict[str, Any]] = {}
+                    links: List[Dict[str, Any]] = []
+
+                    for row in edge_rows:
+                        source_id = str(row.get("source_id") or "").strip()
+                        target_id = str(row.get("target_id") or "").strip()
+                        if not source_id or not target_id:
+                            continue
+
+                        if source_id not in node_map:
+                            node_map[source_id] = {
+                                "id": source_id,
+                                "name": str(row.get("source_name") or source_id),
+                                "type": str(row.get("source_type") or "Unknown"),
+                                "mention_count": int(row.get("source_mention_count") or 0),
+                            }
+                        if target_id not in node_map:
+                            node_map[target_id] = {
+                                "id": target_id,
+                                "name": str(row.get("target_name") or target_id),
+                                "type": str(row.get("target_type") or "Unknown"),
+                                "mention_count": int(row.get("target_mention_count") or 0),
+                            }
+
+                        links.append({
+                            "source": source_id,
+                            "target": target_id,
+                            "relation": str(row.get("relation") or "关联"),
+                            "evidence_count": int(row.get("evidence_count") or 1),
+                        })
+
+                    if not node_map:
+                        node_query = """
+                        MATCH (e:Entity {kb_id: $kb_id})
+                        RETURN e.canonical_name as id,
+                               coalesce(e.name, e.canonical_name) as name,
+                               coalesce(e.type, 'Unknown') as type,
+                               coalesce(e.mention_count, 0) as mention_count
+                        ORDER BY mention_count DESC, name ASC
+                        """
+                        for row in session.run(node_query, kb_id=kb_id):
+                            node_id = str(row.get("id") or "").strip()
+                            if not node_id:
+                                continue
+                            node_map[node_id] = {
+                                "id": node_id,
+                                "name": str(row.get("name") or node_id),
+                                "type": str(row.get("type") or "Unknown"),
+                                "mention_count": int(row.get("mention_count") or 0),
+                            }
+
+                    return {
+                        "kb_id": kb_id,
+                        "nodes": list(node_map.values()),
+                        "links": links,
+                        "sampled": False,
+                        "include_all": True,
+                        "limit_nodes": limit_nodes,
+                        "limit_edges": limit_edges,
+                    }
+
+                node_query = """
+                MATCH (e:Entity {kb_id: $kb_id})
+                RETURN e.canonical_name as id,
+                       coalesce(e.name, e.canonical_name) as name,
+                       coalesce(e.type, 'Unknown') as type,
+                       coalesce(e.mention_count, 0) as mention_count
+                ORDER BY mention_count DESC, name ASC
+                LIMIT $limit_nodes
+                """
+                node_rows = list(
+                    session.run(node_query, kb_id=kb_id, limit_nodes=limit_nodes)
+                )
+
+                nodes = []
+                node_ids = set()
+                for row in node_rows:
+                    node_id = str(row.get("id") or "").strip()
+                    if not node_id:
+                        continue
+                    node_ids.add(node_id)
+                    nodes.append({
+                        "id": node_id,
+                        "name": str(row.get("name") or node_id),
+                        "type": str(row.get("type") or "Unknown"),
+                        "mention_count": int(row.get("mention_count") or 0)
+                    })
+
+                if not node_ids:
+                    return {
+                        "kb_id": kb_id,
+                        "nodes": [],
+                        "links": [],
+                        "sampled": True,
+                        "limit_nodes": limit_nodes,
+                        "limit_edges": limit_edges
+                    }
+
+                edge_query = """
+                MATCH (s:Entity {kb_id: $kb_id})-[r:RELATES]->(t:Entity {kb_id: $kb_id})
+                WHERE s.canonical_name IN $node_ids AND t.canonical_name IN $node_ids
+                RETURN s.canonical_name as source,
+                       t.canonical_name as target,
+                       coalesce(r.type, '关联') as relation,
+                       coalesce(r.evidence_count, 1) as evidence_count
+                ORDER BY evidence_count DESC
+                LIMIT $limit_edges
+                """
+                edge_rows = list(
+                    session.run(
+                        edge_query,
+                        kb_id=kb_id,
+                        node_ids=list(node_ids),
+                        limit_edges=limit_edges
+                    )
+                )
+
+                links = []
+                for row in edge_rows:
+                    source = str(row.get("source") or "").strip()
+                    target = str(row.get("target") or "").strip()
+                    if not source or not target:
+                        continue
+                    links.append({
+                        "source": source,
+                        "target": target,
+                        "relation": str(row.get("relation") or "关联"),
+                        "evidence_count": int(row.get("evidence_count") or 1)
+                    })
+
+                return {
+                    "kb_id": kb_id,
+                    "nodes": nodes,
+                    "links": links,
+                    "sampled": True,
+                    "include_all": False,
+                    "limit_nodes": limit_nodes,
+                    "limit_edges": limit_edges
+                }
+        except Exception as e:
+            logger.error(f"获取图谱预览失败: {str(e)}")
+            return {
+                "kb_id": kb_id,
+                "nodes": [],
+                "links": [],
+                "sampled": True,
+                "include_all": include_all,
+                "limit_nodes": limit_nodes,
+                "limit_edges": limit_edges,
+                "error": str(e)
             }
 
     def _count_chunks(self, kb_id: int) -> int:

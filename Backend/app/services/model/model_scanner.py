@@ -246,13 +246,21 @@ class ModelScanner:
     
     def get_all_llm_models(self) -> Dict[str, List[Dict]]:
         """
-        获取所有LLM模型(仅本地)
+        获取所有LLM模型(本地 + Ollama)
         
         Returns:
-            {"local": [...], "remote": []}
+            {"local": [...], "ollama": [...], "remote": []}
         """
+        ollama_models: List[Dict] = []
+        try:
+            from app.services.llm.ollama_llm_service import get_ollama_llm_service
+            ollama_models = get_ollama_llm_service().list_available_models()
+        except Exception as e:
+            print(f"Warning: Failed to scan ollama models: {e}")
+
         result = {
             "local": self.scan_llm_models(),
+            "ollama": ollama_models,
             "remote": []
         }
 

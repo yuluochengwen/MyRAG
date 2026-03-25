@@ -1,7 +1,9 @@
 """智能助手对话服务"""
+import hashlib
 from typing import List, Dict, Any, Optional, AsyncGenerator
-from app.services.knowledge_base_service import KnowledgeBaseService
+from app.services.knowledge_base.knowledge_base_service import KnowledgeBaseService
 from app.core.database import DatabaseManager
+from app.core.config import settings
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -144,11 +146,42 @@ class ChatService:
         messages.append({"role": "user", "content": user_message})
         
         return messages
+
+    def _apply_deep_thinking_instruction(
+        self,
+        messages: List[Dict[str, str]],
+        llm_provider: str,
+        enable_deep_thinking: bool
+    ) -> List[Dict[str, str]]:
+        """为本地模型注入统一的深度思考指令。"""
+        if not enable_deep_thinking:
+            return messages
+
+        provider = str(llm_provider or "").lower().strip()
+        if provider not in ["local", "transformers", "ollama"]:
+            logger.info("深度思考已请求但当前provider=%s，不启用（仅本地模型生效）", llm_provider)
+            return messages
+
+        instruction = (
+            "深度思考模式已开启。请先进行充分分析、交叉校验与边界检查后再作答。"
+            "不要输出思维链，仅输出：结论、关键依据、可执行建议。"
+        )
+
+        logger.info("深度思考指令已注入: provider=%s", provider)
+
+        copied = [dict(item) for item in messages]
+        for msg in copied:
+            if msg.get("role") == "system":
+                msg["content"] = f"{msg.get('content', '')}\n\n{instruction}"
+                return copied
+
+        copied.insert(0, {"role": "system", "content": instruction})
+        return copied
     
     async def _release_embedding_memory(self):
         """释放embedding模型显存"""
         try:
-            from app.services.embedding_service import get_embedding_service
+            from app.services.embedding.embedding_service import get_embedding_service
             embedding_service = get_embedding_service()
             embedding_service.unload_model()
             import torch
@@ -157,7 +190,126 @@ class ChatService:
             logger.info("已释放embedding模型显存")
         except Exception as e:
             logger.warning(f"释放embedding显存失败: {e}")
-    
+
+    def _to_json_safe(self, value: Any) -> Any:
+        """将复杂对象转换为可JSON序列化结构。"""
+        if value is None:
+            return None
+
+        if isinstance(value, (str, int, float, bool)):
+            return value
+
+        if isinstance(value, dict):
+            return {str(k): self._to_json_safe(v) for k, v in value.items()}
+
+        if isinstance(value, (list, tuple, set)):
+            return [self._to_json_safe(item) for item in value]
+
+        iso_format = getattr(value, 'isoformat', None)
+        if callable(iso_format):
+            try:
+                return iso_format()
+            except Exception:
+                pass
+
+        neo4j_iso = getattr(value, 'iso_format', None)
+        if callable(neo4j_iso):
+            try:
+                return neo4j_iso()
+            except Exception:
+                pass
+
+        return str(value)
+
+    def _build_source_items(self, search_results: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        """构建来源列表，并提供稳定的展示权重（display_weight）。"""
+        selected = search_results[:max(0, int(limit or 0))]
+        if not selected:
+            return []
+
+        raw_scores: List[float] = []
+        for item in selected:
+            raw_scores.append(float(item.get('final_score', item.get('similarity', item.get('score', 0.0))) or 0.0))
+
+        min_score = min(raw_scores)
+        max_score = max(raw_scores)
+        display_weights: List[float] = []
+        if max_score > min_score:
+            scale = max_score - min_score
+            normalized = [max(0.0, (value - min_score) / scale) for value in raw_scores]
+            total = sum(normalized)
+            if total > 0:
+                display_weights = [value / total for value in normalized]
+            else:
+                display_weights = [1.0 / len(raw_scores)] * len(raw_scores)
+        else:
+            display_weights = [1.0 / len(raw_scores)] * len(raw_scores)
+
+        sources: List[Dict[str, Any]] = []
+        for index, item in enumerate(selected):
+            content = str(item.get('content', '') or '')
+            metadata = self._to_json_safe(item.get('metadata', {}) or {})
+            sources.append({
+                'content': content[:200] + ('...' if len(content) > 200 else ''),
+                'full_content': content,
+                'similarity': raw_scores[index],
+                'display_weight': display_weights[index],
+                'raw_score': float(item.get('score', 0.0) or 0.0),
+                'final_score': float(item.get('final_score', raw_scores[index]) or 0.0),
+                'file_id': metadata.get('file_id'),
+                'source': item.get('source', 'unknown'),
+                'metadata': metadata
+            })
+
+        return sources
+
+    def _score_result_for_filter(self, item: Dict[str, Any]) -> float:
+        return float(item.get('similarity', item.get('final_score', item.get('score', 0.0))) or 0.0)
+
+    def _filter_retrieval_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """对检索结果做轻量过滤，提升上下文质量并控制上文长度。"""
+        if not search_results:
+            return []
+
+        max_results = max(1, int(getattr(settings.hybrid_retrieval, 'chat_context_max_results', 10) or 10))
+        min_similarity = float(getattr(settings.hybrid_retrieval, 'chat_min_similarity', 0.12) or 0.12)
+        min_graph_similarity = float(getattr(settings.hybrid_retrieval, 'chat_graph_min_similarity', min_similarity) or min_similarity)
+        min_graph_confidence = float(getattr(settings.hybrid_retrieval, 'chat_graph_min_confidence', 0.35) or 0.35)
+
+        scored = sorted(search_results, key=self._score_result_for_filter, reverse=True)
+        filtered: List[Dict[str, Any]] = []
+
+        for item in scored:
+            similarity = self._score_result_for_filter(item)
+            source = str(item.get('source', '') or '')
+            threshold = min_graph_similarity if source.startswith('graph') else min_similarity
+            if similarity < threshold:
+                continue
+
+            if source == 'graph_direct':
+                metadata = item.get('metadata', {}) or {}
+                attrs = metadata.get('entity_attributes') if isinstance(metadata, dict) else {}
+                confidence = 0.0
+                if isinstance(attrs, dict):
+                    confidence = float(attrs.get('confidence', 0.0) or 0.0)
+                if confidence and confidence < min_graph_confidence:
+                    continue
+
+            normalized = dict(item)
+            normalized['similarity'] = similarity
+            filtered.append(normalized)
+            if len(filtered) >= max_results:
+                break
+
+        # 兜底：至少保留一条最高分，避免过滤过严导致完全无上下文
+        if not filtered and scored:
+            keep_count = min(max_results, max(1, len(scored)))
+            filtered = [dict(item) for item in scored[:keep_count]]
+            for item in filtered:
+                item['similarity'] = self._score_result_for_filter(item)
+
+        return filtered
+
     # ==================== 主要对话方法 ====================
     
     async def chat_with_assistant(
@@ -171,7 +323,8 @@ class ChatService:
         llm_provider: str = "local",
         lora_model_id: Optional[int] = None,
         temperature: float = 0.7,
-        use_hybrid_retrieval: bool = False
+        use_hybrid_retrieval: bool = False,
+        enable_deep_thinking: bool = False
     ) -> Dict[str, Any]:
         """
         智能助手对话（支持多知识库 + 上下文记忆 + 混合检索 + LoRA推理）
@@ -196,6 +349,13 @@ class ChatService:
             search_results = []
             retrieval_method = "none"
             retrieval_diagnostics = None
+            logger.info(
+                "开始智能助手对话: kb_ids=%s, hybrid=%s, deep_thinking=%s, provider=%s",
+                kb_ids,
+                use_hybrid_retrieval,
+                enable_deep_thinking,
+                llm_provider,
+            )
             
             # 1. 如果指定了知识库，进行检索
             if kb_ids and len(kb_ids) > 0:
@@ -226,6 +386,8 @@ class ChatService:
                         top_k=top_k,
                         score_threshold=0.2
                     )
+
+                search_results = self._filter_retrieval_results(search_results)
             else:
                 logger.info(f"纯对话模式: query='{query}'")
             
@@ -257,22 +419,15 @@ class ChatService:
                 llm_model=llm_model,
                 llm_provider=llm_provider,
                 lora_model_id=lora_model_id,
-                temperature=temperature
+                temperature=temperature,
+                enable_deep_thinking=enable_deep_thinking
             )
             
             # 6. 返回结果
+            source_limit = max(1, int(getattr(settings.hybrid_retrieval, 'chat_context_max_results', 10) or 10))
             return {
                 'answer': answer,
-                'sources': [
-                    {
-                        'content': r['content'][:200] + ('...' if len(r['content']) > 200 else ''),
-                        'similarity': r.get('similarity', r.get('score', 0)),
-                        'file_id': r.get('metadata', {}).get('file_id'),
-                        'source': r.get('source', 'unknown'),
-                        'metadata': r.get('metadata', {})
-                    }
-                    for r in search_results[:3]  # 只返回前3个来源
-                ],
+                'sources': self._build_source_items(search_results, limit=source_limit),
                 'embedding_model': embedding_model,
                 'retrieval_count': len(search_results),
                 'diagnostics': retrieval_diagnostics
@@ -322,7 +477,8 @@ class ChatService:
         llm_model: Optional[str],
         llm_provider: str,
         lora_model_id: Optional[int],
-        temperature: float
+        temperature: float,
+        enable_deep_thinking: bool = False
     ) -> str:
         """
         调用LLM生成回答（支持上下文记忆和LoRA推理）
@@ -345,11 +501,12 @@ class ChatService:
         
         # 构建完整消息列表
         messages = self._build_messages(user_message, history_messages, system_prompt)
+        messages = self._apply_deep_thinking_instruction(messages, llm_provider, enable_deep_thinking)
         
         # 如果指定了LoRA模型，使用LoRA推理服务
         if lora_model_id and llm_provider in ['local', 'transformers']:
             try:
-                from app.services.lora_inference_service import get_lora_inference_service
+                from app.services.lora.lora_inference_service import get_lora_inference_service
                 lora_service = get_lora_inference_service()
                 
                 logger.info(f"使用LoRA推理: lora_model_id={lora_model_id}, 历史消息: {len(history_messages) if history_messages else 0}条")
@@ -369,7 +526,7 @@ class ChatService:
         try:
             if llm_provider in ['local', 'transformers']:
                 # 调用Transformers本地推理（使用延迟加载）
-                from app.services.transformers_service import get_transformers_service
+                from app.services.llm.transformers_service import get_transformers_service
                 transformers_service = get_transformers_service()
                 
                 model_name = llm_model if llm_model else 'Qwen3-8B'
@@ -388,7 +545,7 @@ class ChatService:
             
             elif llm_provider == 'ollama':
                 # 调用Ollama服务
-                from app.services.ollama_llm_service import get_ollama_llm_service
+                from app.services.llm.ollama_llm_service import get_ollama_llm_service
                 ollama_service = get_ollama_llm_service()
                 
                 model_name = llm_model if llm_model else 'qwen2.5:7b'
@@ -420,7 +577,8 @@ class ChatService:
         llm_provider: str = "local",
         lora_model_id: Optional[int] = None,
         temperature: float = 0.7,
-        use_hybrid_retrieval: bool = False
+        use_hybrid_retrieval: bool = False,
+        enable_deep_thinking: bool = False
     ):
         """
         智能助手流式对话（支持上下文记忆和LoRA推理）
@@ -444,6 +602,13 @@ class ChatService:
             embedding_model = None
             search_results = []
             retrieval_diagnostics = None
+            logger.info(
+                "开始智能助手流式对话: kb_ids=%s, hybrid=%s, deep_thinking=%s, provider=%s",
+                kb_ids,
+                use_hybrid_retrieval,
+                enable_deep_thinking,
+                llm_provider,
+            )
             
             # 1. 如果指定了知识库，进行RAG检索
             if kb_ids and len(kb_ids) > 0:
@@ -467,6 +632,8 @@ class ChatService:
                         top_k=top_k,
                         score_threshold=0.2
                     )
+
+                search_results = self._filter_retrieval_results(search_results)
                 
                 kb = await self.kb_service.get_knowledge_base(kb_ids[0])
                 if kb:
@@ -476,16 +643,8 @@ class ChatService:
             
             # 2. 发送检索结果（如果有）
             if search_results:
-                sources = [
-                    {
-                        'content': r['content'][:200] + ('...' if len(r['content']) > 200 else ''),
-                        'similarity': r.get('similarity', r.get('score', r.get('final_score', 0))),
-                        'file_id': r.get('metadata', {}).get('file_id'),
-                        'source': r.get('source', 'unknown'),
-                        'metadata': r.get('metadata', {})
-                    }
-                    for r in search_results[:5]  # 返回前5个来源（包含图谱）
-                ]
+                source_limit = max(1, int(getattr(settings.hybrid_retrieval, 'chat_context_max_results', 10) or 10))
+                sources = self._build_source_items(search_results, limit=source_limit)
                 yield {
                     "type": "sources",
                     "data": {
@@ -512,7 +671,8 @@ class ChatService:
                 llm_model=llm_model,
                 llm_provider=llm_provider,
                 lora_model_id=lora_model_id,
-                temperature=temperature
+                temperature=temperature,
+                enable_deep_thinking=enable_deep_thinking
             ):
                 yield {
                     "type": "text",
@@ -541,7 +701,8 @@ class ChatService:
         llm_model: Optional[str],
         llm_provider: str,
         lora_model_id: Optional[int],
-        temperature: float
+        temperature: float,
+        enable_deep_thinking: bool = False
     ) -> AsyncGenerator[str, None]:
         """
         流式调用LLM生成回答（支持上下文记忆和LoRA推理）
@@ -554,11 +715,12 @@ class ChatService:
         
         # 构建完整消息列表（复用公共方法）
         messages = self._build_messages(user_message, history_messages, system_prompt)
+        messages = self._apply_deep_thinking_instruction(messages, llm_provider, enable_deep_thinking)
         
         # 如果指定了LoRA模型，使用LoRA推理服务（流式暂不支持，回退到非流式）
         if lora_model_id and llm_provider in ['local', 'transformers']:
             try:
-                from app.services.lora_inference_service import get_lora_inference_service
+                from app.services.lora.lora_inference_service import get_lora_inference_service
                 lora_service = get_lora_inference_service()
                 
                 logger.info(f"使用LoRA推理（流式暂不支持，使用非流式）: lora_model_id={lora_model_id}")
@@ -579,7 +741,7 @@ class ChatService:
         try:
             if llm_provider in ['local', 'transformers']:
                 # 使用延迟加载获取transformers_service
-                from app.services.transformers_service import get_transformers_service
+                from app.services.llm.transformers_service import get_transformers_service
                 transformers_service = get_transformers_service()
                 
                 model_name = llm_model if llm_model else 'Qwen3-8B'
@@ -598,7 +760,7 @@ class ChatService:
             
             elif llm_provider == 'ollama':
                 # 调用Ollama服务（流式）
-                from app.services.ollama_llm_service import get_ollama_llm_service
+                from app.services.llm.ollama_llm_service import get_ollama_llm_service
                 ollama_service = get_ollama_llm_service()
                 
                 model_name = llm_model if llm_model else 'qwen2.5:7b'
@@ -638,7 +800,7 @@ class ChatService:
             检索结果列表
         """
         try:
-            from app.services.hybrid_retrieval_service import get_hybrid_retrieval_service
+            from app.services.retrieval.hybrid_retrieval_service import get_hybrid_retrieval_service
             from app.core.config import settings
             
             # 检查是否启用知识图谱
@@ -679,7 +841,57 @@ class ChatService:
                     'kb_id': kb_id,
                     **diagnostics
                 })
-            
+
+            # 跨知识库去重与多样性控制
+            if len(kb_ids) > 1 and getattr(settings.hybrid_retrieval, 'multi_kb_dedup_enabled', True):
+                all_results.sort(key=lambda x: x.get('final_score', x.get('score', 0)), reverse=True)
+                deduped_results = []
+                seen_keys = set()
+                per_kb_count: Dict[int, int] = {}
+                max_per_kb = max(1, int(getattr(settings.hybrid_retrieval, 'multi_kb_max_per_kb', top_k) or top_k))
+                source_count: Dict[str, int] = {}
+                max_same_source_ratio = float(getattr(settings.hybrid_retrieval, 'multi_kb_max_same_source_ratio', 0.8) or 0.8)
+                max_same_source_ratio = max(0.2, min(1.0, max_same_source_ratio))
+
+                for item in all_results:
+                    metadata = item.get('metadata', {}) or {}
+                    kb_value = metadata.get('kb_id')
+                    try:
+                        current_kb_id = int(kb_value) if kb_value is not None else None
+                    except Exception:
+                        current_kb_id = None
+
+                    dedup_key = item.get('chunk_id')
+                    if not dedup_key:
+                        source = item.get('source', 'unknown')
+                        entity = metadata.get('entity') or metadata.get('target_entity') or ''
+                        content_head = str(item.get('content', '') or '')[:120]
+                        content_digest = hashlib.sha1(content_head.encode('utf-8', errors='ignore')).hexdigest()[:16]
+                        dedup_key = f"{source}|{entity}|{content_digest}"
+
+                    if dedup_key in seen_keys:
+                        continue
+
+                    source_name = str(item.get('source', 'unknown') or 'unknown')
+                    planned_total = len(deduped_results) + 1
+                    source_next = source_count.get(source_name, 0) + 1
+                    if planned_total > 1 and (source_next / planned_total) > max_same_source_ratio:
+                        continue
+
+                    if current_kb_id is not None:
+                        current_count = per_kb_count.get(current_kb_id, 0)
+                        if current_count >= max_per_kb:
+                            continue
+                        per_kb_count[current_kb_id] = current_count + 1
+
+                    seen_keys.add(dedup_key)
+                    source_count[source_name] = source_next
+                    deduped_results.append(item)
+
+                all_results = deduped_results
+            else:
+                all_results.sort(key=lambda x: x.get('final_score', x.get('score', 0)), reverse=True)
+
             # 按最终分数排序并返回top_k
             all_results.sort(key=lambda x: x.get('final_score', x.get('score', 0)), reverse=True)
             

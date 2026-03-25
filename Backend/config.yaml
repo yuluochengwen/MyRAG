@@ -28,8 +28,28 @@ file:
 
 # 文本处理配置
 text_processing:
-  chunk_size: 800  # 增加块大小以适应更多上下文
-  chunk_overlap: 100  # 增加重叠以保持连贯性
+  chunk_size: 750  # 规则切分默认块大小
+  chunk_overlap: 120  # 提高重叠，减小跨块信息断裂
+  split_profiles:
+    text:
+      chunk_size: 750
+      chunk_overlap: 120
+    code:
+      chunk_size: 600
+      chunk_overlap: 100
+    html:
+      chunk_size: 700
+      chunk_overlap: 120
+    json:
+      chunk_size: 650
+      chunk_overlap: 100
+    markdown:
+      chunk_size: 700
+      chunk_overlap: 120
+  hard_sentence_split_enabled: true  # 开启超长句硬切
+  hard_sentence_max_length: 280  # 单句过长时强制切分阈值
+  split_quality_monitoring_enabled: true  # 切分质量监控
+  split_quality_metrics_file: "data/logs/split_metrics.jsonl"
   separators:
     - "\n\n"
     - "\n"
@@ -43,7 +63,7 @@ text_processing:
   
   # 语义分割配置（基于LLM）
   semantic_split:
-    enabled: true  # 启用语义分割
+    enabled: false  # 关闭语义分割，统一使用规则切分
     max_chunk_size: 800  # 语义块最大大小
     min_chunk_size: 200  # 语义块最小大小
     ollama_model: "qwen2.5:7b"  # 用于语义判断的Ollama模型
@@ -63,12 +83,15 @@ embedding:
   model_dir: "Models/Embedding"  # 相对于项目根目录MyRAG/
   batch_size: 32
   max_length: 512
+  vector_cache_size: 5000  # 内存向量缓存大小（用于避免重复文本重复向量化）
+  enable_e5_prefix: true  # e5模型自动使用 query/passage 前缀
   
   # Ollama配置
   ollama:
     base_url: "http://localhost:11434"
     timeout: 120  # 增加超时时间，实体提取等复杂任务需要较长处理时间
     default_model: "nomic-embed-text"
+    max_workers: 4  # Ollama embedding 并发请求数
 
 # 日志配置
 logging:
@@ -92,6 +115,8 @@ llm:
   transformers_max_memory: 5.5  # 最大显存使用(GB), RTX 3060 6GB建议5.5
   temperature: 0.5  # 默认温度参数（0.5 质量与创造性平衡）
   max_tokens: 256  # 默认最大 tokens（从 512 降至 256，提升速度）
+  transformers_generation_timeout_seconds: 480  # Transformers生成超时基线(秒)
+  transformers_assumed_tokens_per_second: 5.0  # 估算生成速度(越小超时越长)
   ollama:
     base_url: "http://localhost:11434"
     timeout: 120
@@ -113,21 +138,48 @@ knowledge_graph:
   provider: "neo4j"  # neo4j
   enable_fact_nodes: false  # 是否写入Fact节点
   cleanup_fact_nodes_on_build: true  # 每次构建后清理历史Fact节点（enable_fact_nodes=false时生效）
+  idempotent_ingest_enabled: true
+  rollback_on_failure: true
+  run_metrics_file: "data/logs/graph_build_metrics.jsonl"
   
   # 实体提取配置
   entity_extraction:
-    provider: "ollama"  # ollama
+    provider: "deepseek"  # deepseek, zai, ollama
+    deepseek_model: "deepseek-chat"
+    deepseek_base_url: "https://api.deepseek.com"
     ollama_model: "qwen2.5:7b"  # 使用本地模型，提升稳定性
+    zai_model: "glm-4.7-flash"
+    zai_base_url: "https://open.bigmodel.cn/api/paas/v4"
     temperature: 0.1  # 低温度保证JSON输出稳定
     timeout: 300
-    max_tokens: 1024
+    max_tokens: 2048
     max_retries: 3
-    batch_size: 5  # 并发提取数量
+    max_entities_per_chunk: 40
+    max_triples_per_chunk: 60
+    enable_json_repair: true
+    json_repair_max_tokens: 1200
+    batch_size: 4  # 并发提取数量（远程API如DeepSeek可安全提高到4-8）
+    min_concurrency: 2
+    max_concurrency: 8
+    adaptive_concurrency_enabled: true
+    target_latency_ms: 2500
+    timeout_step_seconds: 30
+    queue_batch_size: 24
     min_text_length: 50  # 最小文本长度（过短不提取）
+    max_text_length: 9000
+    layered_extraction_enabled: true
+    layer_window_chars: 3200
+    layer_overlap_chars: 300
     schema_version: "v2"
+    prompt_version: "glm47-er-v1"
     enable_multilabel: true
     keep_legacy_type_field: true
     enable_unknown_bucket: true
+    enable_second_pass_reclassify: true
+    reclassify_batch_limit: 80
+    extraction_cache_enabled: true
+    extraction_cache_file: "data/logs/graph_extraction_cache.jsonl"
+    extraction_cache_ttl_hours: 168
     unknown_entity_type: "Unclassified"
     unknown_relation_type: "related_to"
     llm_normalization_priority: true
@@ -182,14 +234,42 @@ hybrid_retrieval:
   enable_query_normalization: true  # 查询实体标准化
   enable_compound_entity_split: true  # 复合实体拆分回退
   graph_min_results: 1  # 图结果最小保底数量（有命中时生效）
+  graph_min_quality_score: 0.12
   diagnostics_enabled: true  # 返回图检索诊断信息
   max_fallback_candidates: 8  # 单实体最大回退候选数
   enable_keyword_search: true  # 启用关键词召回
+  keyword_candidate_factor: 8
+  keyword_min_candidates: 60
+  keyword_use_fulltext_first: true
+  keyword_score_power: 1.0
+  enable_vector_query_rewrite: true
+  vector_query_max_variants: 3
+  vector_fusion_method: "rrf"
+  adaptive_recall_enabled: true
+  adaptive_recall_min_factor: 1.0
+  adaptive_recall_max_factor: 1.8
   enable_rrf_fusion: true  # 启用RRF融合
   rrf_k: 60  # RRF常数
   rrf_window_size: 50  # 每通道参与融合的最大候选数
+  normalize_fusion_scores: true
   enable_light_rerank: true  # 启用轻量重排
   rerank_alpha: 0.7  # 轻量重排中融合分数占比
+  graph_direct_base_score: 0.82
+  graph_hop_base_score: 0.62
+  graph_confidence_weight: 0.22
+  graph_evidence_weight: 0.16
+  graph_mention_weight: 0.08
+  graph_hop_decay: 0.25
+  chat_top_k: 10  # 发送给LLM前的候选上限
+  chat_context_max_results: 10  # 上下文最终最大保留条数
+  chat_min_similarity: 0.12  # 文本最小相关度阈值
+  chat_graph_min_similarity: 0.10  # 图谱来源最小相关度阈值
+  chat_graph_min_confidence: 0.35  # graph_direct实体最小置信度
+  multi_kb_dedup_enabled: true
+  multi_kb_max_per_kb: 4
+  multi_kb_max_same_source_ratio: 0.8
+  monitoring_enabled: true
+  hybrid_metrics_log_file: "data/logs/hybrid_retrieval_metrics.jsonl"
   query_stopwords:
     - "的"
     - "了"
@@ -217,6 +297,59 @@ hybrid_retrieval:
     - "/"
     - "-"
     - "_"
+
+# 传统向量RAG检索优化配置
+vector_retrieval:
+  enable_two_stage: true
+  recall_factor: 8
+  min_recall_k: 30
+  max_recall_k: 120
+
+  enable_dynamic_threshold: true
+  base_score_threshold: 0.2
+  relative_margin: 0.08
+  min_keep_results: 3
+
+  enable_light_rerank: true
+  rerank_alpha: 0.75
+
+  enable_mmr: true
+  mmr_lambda: 0.7
+
+  enable_cluster_dedup: true
+  cluster_adjacent_window: 1
+  max_chunks_per_cluster: 3
+  max_clusters_per_file: 2
+
+  enable_query_rewrite: true
+  query_rewrite_max_variants: 3
+  query_stopwords:
+    - "的"
+    - "了"
+    - "和"
+    - "与"
+    - "及"
+    - "由"
+    - "是"
+    - "是什么"
+    - "怎么"
+    - "如何"
+    - "哪些"
+    - "哪几"
+    - "吗"
+    - "呢"
+
+  enable_multi_query_fusion: true
+  fusion_method: "rrf"  # rrf|max
+  rrf_k: 60
+
+  enable_cross_encoder_rerank: false
+  cross_encoder_model: "BAAI/bge-reranker-base"
+  cross_encoder_top_n: 20
+  cross_encoder_alpha: 0.7
+
+  monitoring_enabled: true
+  metrics_log_file: "data/logs/retrieval_metrics.jsonl"
 
 # 数据库连接池配置
 database:

@@ -21,14 +21,14 @@ mysqldump -u root -p myrag > myrag_backup_$(date +%Y%m%d_%H%M%S).sql
 ### 2. 执行迁移脚本
 
 ```bash
-mysql -u root -p myrag < Backend/scripts/lora_migration.sql
+mysql -u root -p myrag < scripts/db/lora_migration.sql
 ```
 
 或者在 MySQL 客户端中：
 
 ```sql
 USE myrag;
-SOURCE Backend/scripts/lora_migration.sql;
+SOURCE scripts/db/lora_migration.sql;
 ```
 
 ### 3. 验证迁移
