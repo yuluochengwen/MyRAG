@@ -11,7 +11,7 @@ from app.models.schemas import (
 )
 from app.core.config import settings
 from app.core.database import db_manager
-from app.services.chat_service import ChatService
+from app.services.core.chat_service import ChatService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

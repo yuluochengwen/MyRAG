@@ -1,0 +1,124 @@
+# 检索配置
+hybrid_retrieval:
+  vector_weight: 0.6
+  graph_weight: 0.4
+  keyword_weight: 0.5
+  enable_by_default: false
+  enable_query_normalization: true
+  enable_compound_entity_split: true
+  graph_min_results: 1
+  graph_min_quality_score: 0.12
+  diagnostics_enabled: true
+  max_fallback_candidates: 8
+  enable_keyword_search: true
+  keyword_candidate_factor: 8
+  keyword_min_candidates: 60
+  keyword_use_fulltext_first: true
+  keyword_score_power: 1.0
+  enable_vector_query_rewrite: true
+  vector_query_max_variants: 3
+  vector_fusion_method: "rrf"
+  adaptive_recall_enabled: true
+  adaptive_recall_min_factor: 1.0
+  adaptive_recall_max_factor: 1.8
+  enable_rrf_fusion: true
+  rrf_k: 60
+  rrf_window_size: 50
+  normalize_fusion_scores: true
+  enable_light_rerank: true
+  rerank_alpha: 0.7
+  graph_direct_base_score: 0.82
+  graph_hop_base_score: 0.62
+  graph_confidence_weight: 0.22
+  graph_evidence_weight: 0.16
+  graph_mention_weight: 0.08
+  graph_hop_decay: 0.25
+  chat_top_k: 10
+  chat_context_max_results: 10
+  chat_min_similarity: 0.12
+  chat_graph_min_similarity: 0.10
+  chat_graph_min_confidence: 0.35
+  multi_kb_dedup_enabled: true
+  multi_kb_max_per_kb: 4
+  multi_kb_max_same_source_ratio: 0.8
+  monitoring_enabled: true
+  hybrid_metrics_log_file: "data/logs/hybrid_retrieval_metrics.jsonl"
+  query_stopwords:
+    - "的"
+    - "了"
+    - "和"
+    - "与"
+    - "及"
+    - "由"
+    - "是"
+    - "是什么"
+    - "怎么"
+    - "如何"
+    - "哪些"
+    - "哪几"
+    - "吗"
+    - "呢"
+    - "啊"
+    - "呀"
+  compound_split_tokens:
+    - "的"
+    - "与"
+    - "和"
+    - "及"
+    - "由"
+    - "、"
+    - "/"
+    - "-"
+    - "_"
+
+vector_retrieval:
+  enable_two_stage: true
+  recall_factor: 8
+  min_recall_k: 30
+  max_recall_k: 120
+
+  enable_dynamic_threshold: true
+  base_score_threshold: 0.2
+  relative_margin: 0.08
+  min_keep_results: 3
+
+  enable_light_rerank: true
+  rerank_alpha: 0.75
+
+  enable_mmr: true
+  mmr_lambda: 0.7
+
+  enable_cluster_dedup: true
+  cluster_adjacent_window: 1
+  max_chunks_per_cluster: 3
+  max_clusters_per_file: 2
+
+  enable_query_rewrite: true
+  query_rewrite_max_variants: 3
+  query_stopwords:
+    - "的"
+    - "了"
+    - "和"
+    - "与"
+    - "及"
+    - "由"
+    - "是"
+    - "是什么"
+    - "怎么"
+    - "如何"
+    - "哪些"
+    - "哪几"
+    - "吗"
+    - "呢"
+
+  enable_multi_query_fusion: true
+  fusion_method: "rrf"
+  rrf_k: 60
+
+  enable_cross_encoder_rerank: false
+  cross_encoder_model: "BAAI/bge-reranker-base"
+  cross_encoder_top_n: 20
+  cross_encoder_alpha: 0.7
+
+  monitoring_enabled: true
+  metrics_log_file: "data/logs/retrieval_metrics.jsonl"

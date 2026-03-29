@@ -8,10 +8,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
-from app.services.agent_service import AgentService
+from app.services.core.agent_service import AgentService
 from app.core.database import get_db
-from app.services.llm.ollama_llm_service import OllamaLLMService
-from app.services.knowledge_base.knowledge_base_service import KnowledgeBaseService
+from app.services.infrastructure.llm.ollama_llm_service import OllamaLLMService
+from app.services.domain.knowledge_base.knowledge_base_service import KnowledgeBaseService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

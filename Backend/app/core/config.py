@@ -365,28 +365,59 @@ def load_config() -> Settings:
     加载配置
     
     从 YAML 配置文件合并配置项到默认设置
-    本地开发: MyRAG/Backend/config.yaml
-    Docker: /app/config.yaml (Backend内容直接在WORKDIR)
+    支持多环境配置:
+    - base.yaml: 基础配置
+    - development.yaml / production.yaml: 环境特定配置
+    - retrieval.yaml: 检索配置
+    
+    本地开发: MyRAG/Backend/config/
+    Docker: /app/config/ (Backend内容直接在WORKDIR)
     """
-    config_file = BASE_DIR / "Backend" / "config.yaml"
-    if not config_file.exists():
+    # 确定配置目录
+    config_dir = BASE_DIR / "Backend" / "config"
+    if not config_dir.exists():
         # Docker 环境: Backend 内容直接在工作目录
-        config_file = Path(__file__).resolve().parent.parent.parent / "config.yaml"
+        config_dir = Path(__file__).resolve().parent.parent.parent / "config"
     
-    if not config_file.exists():
-        return Settings()
+    # 确定环境
+    env = os.getenv("APP_ENV", "development")
     
-    with open(config_file, 'r', encoding='utf-8') as f:
-        yaml_config = yaml.safe_load(f)
+    # 配置文件列表（按优先级顺序）
+    config_files = [
+        config_dir / "base.yaml",
+        config_dir / "retrieval.yaml",
+        config_dir / f"{env}.yaml"
+    ]
     
-    if not yaml_config:
-        return Settings()
+    # 合并所有配置文件
+    merged_config = {}
+    for config_file in config_files:
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                file_config = yaml.safe_load(f)
+                if file_config:
+                    # 深度合并配置
+                    for key, value in file_config.items():
+                        if key in merged_config and isinstance(merged_config[key], dict) and isinstance(value, dict):
+                            merged_config[key].update(value)
+                        else:
+                            merged_config[key] = value
+    
+    # 如果没有找到任何配置文件，尝试使用旧的config.yaml
+    if not merged_config:
+        config_file = BASE_DIR / "Backend" / "config.yaml"
+        if not config_file.exists():
+            config_file = Path(__file__).resolve().parent.parent.parent / "config.yaml"
+        
+        if config_file.exists():
+            with open(config_file, 'r', encoding='utf-8') as f:
+                merged_config = yaml.safe_load(f) or {}
     
     # 创建配置对象
     settings = Settings()
     
-    # 合并 YAML 配置
-    for key, value in yaml_config.items():
+    # 合并配置
+    for key, value in merged_config.items():
         if hasattr(settings, key) and isinstance(value, dict):
             config_obj = getattr(settings, key)
             for k, v in value.items():
@@ -406,14 +437,15 @@ def load_config() -> Settings:
                         target_key = 'persist_dir'
 
                     # 处理路径配置:将相对路径转换为绝对路径
-                    # 支持两种格式: "Models" 或 "../Models" (都相对于BASE_DIR)
                     if target_key in ['local_models_dir', 'upload_dir', 'persist_dir', 'model_dir', 'file', 'log_dir', 'metrics_log_file', 'split_quality_metrics_file', 'extraction_cache_file', 'run_metrics_file', 'hybrid_metrics_log_file']:
                         if isinstance(v, str) and not Path(v).is_absolute():
-                            # 移除可能的"../"前缀,统一处理为相对于BASE_DIR
                             clean_path = v.replace('../', '')
                             v = str((BASE_DIR / clean_path).resolve())
                     if hasattr(config_obj, target_key):
                         setattr(config_obj, target_key, v)
+    
+    # 设置环境
+    settings.app.env = env
     
     return settings
 

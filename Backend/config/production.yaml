@@ -1,0 +1,131 @@
+# 生产环境配置
+app:
+  debug: false
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins:
+    - "https://your-domain.com"
+    - "https://api.your-domain.com"
+
+llm:
+  default_provider: "transformers"
+  default_model: "Qwen2.5-7B-Instruct"
+  local_models_dir: "Models"
+  transformers_quantization: "int8"
+  transformers_max_memory: 8.0
+  temperature: 0.3
+  max_tokens: 512
+  transformers_generation_timeout_seconds: 300
+  transformers_assumed_tokens_per_second: 8.0
+  ollama:
+    base_url: "http://localhost:11434"
+    timeout: 180
+    default_model: "qwen2.5:14b"
+
+neo4j:
+  uri: "bolt://localhost:7687"
+  username: "neo4j"
+  password: "${NEO4J_PASSWORD}"
+  database: "neo4j"
+  max_connection_lifetime: 3600
+  max_connection_pool_size: 100
+  connection_timeout: 30
+
+knowledge_graph:
+  enabled: true
+  provider: "neo4j"
+  enable_fact_nodes: false
+  cleanup_fact_nodes_on_build: true
+  idempotent_ingest_enabled: true
+  rollback_on_failure: true
+  run_metrics_file: "data/logs/graph_build_metrics.jsonl"
+  
+  entity_extraction:
+    provider: "deepseek"
+    deepseek_model: "deepseek-chat"
+    deepseek_base_url: "https://api.deepseek.com"
+    temperature: 0.1
+    timeout: 300
+    max_tokens: 2048
+    max_retries: 5
+    max_entities_per_chunk: 40
+    max_triples_per_chunk: 60
+    enable_json_repair: true
+    json_repair_max_tokens: 1200
+    batch_size: 8
+    min_concurrency: 4
+    max_concurrency: 16
+    adaptive_concurrency_enabled: true
+    target_latency_ms: 2000
+    timeout_step_seconds: 30
+    queue_batch_size: 32
+    min_text_length: 50
+    max_text_length: 9000
+    layered_extraction_enabled: true
+    layer_window_chars: 3200
+    layer_overlap_chars: 300
+    schema_version: "v2"
+    prompt_version: "glm47-er-v1"
+    enable_multilabel: true
+    keep_legacy_type_field: true
+    enable_unknown_bucket: true
+    enable_second_pass_reclassify: true
+    reclassify_batch_limit: 80
+    extraction_cache_enabled: true
+    extraction_cache_file: "data/logs/graph_extraction_cache.jsonl"
+    extraction_cache_ttl_hours: 168
+    unknown_entity_type: "Unclassified"
+    unknown_relation_type: "related_to"
+    llm_normalization_priority: true
+    alias_map: {}
+    valid_entity_types:
+      - Person
+      - Organization
+      - Location
+      - Product
+      - Concept
+      - Event
+      - Date
+      - 主体
+      - 动作/行为
+      - 属性/特征
+      - 关联对象
+      - 约束/规则
+      - Unclassified
+    valid_relation_types:
+      - 隶属/组成
+      - 执行/触发
+      - 描述/修饰
+      - 约束/限制
+      - 时空/因果
+      - works_at
+      - located_in
+      - part_of
+      - founded_by
+      - related_to
+  
+  max_hops: 2
+  min_entity_length: 2
+  enable_by_default: false
+  
+  entity_types:
+    - Person
+    - Organization
+    - Location
+    - Product
+    - Concept
+    - Event
+    - Date
+
+logging:
+  level: "WARNING"
+  file: "data/logs/app.log"
+  max_bytes: 52428800
+  backup_count: 10
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+database:
+  pool_size: 20
+  max_overflow: 40
+  pool_recycle: 3600
+  echo: false

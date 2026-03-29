@@ -158,7 +158,7 @@ async def delete_knowledge_base(
         
         # 2. 删除知识图谱数据
         try:
-            from app.services.knowledge_graph.neo4j_graph_service import get_neo4j_graph_service
+            from app.services.domain.knowledge_graph.neo4j_graph_service import get_neo4j_graph_service
             graph_service = get_neo4j_graph_service()
             deleted_nodes = graph_service.delete_kb_graph(kb_id)
             logger.info(f"✓ 图谱数据已删除: {deleted_nodes} 个节点")

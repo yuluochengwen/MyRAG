@@ -10,7 +10,7 @@ from app.models.schemas import (
     AssistantResponse, 
     ModelInfo
 )
-from app.services.model.model_scanner import model_scanner
+from app.services.infrastructure.model.model_scanner import model_scanner
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,7 +65,7 @@ async def create_assistant(
                 )
         elif assistant_data.llm_provider == "ollama":
             # 验证Ollama模型
-            from app.services.llm.ollama_llm_service import get_ollama_llm_service
+            from app.services.infrastructure.llm.ollama_llm_service import get_ollama_llm_service
             ollama_service = get_ollama_llm_service()
             
             if not ollama_service.is_available():
@@ -306,7 +306,7 @@ async def update_assistant(
                 )
         elif assistant_data.llm_provider == "ollama":
             # 验证Ollama模型
-            from app.services.llm.ollama_llm_service import get_ollama_llm_service
+            from app.services.infrastructure.llm.ollama_llm_service import get_ollama_llm_service
             ollama_service = get_ollama_llm_service()
             
             if not ollama_service.is_available():

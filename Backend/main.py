@@ -84,13 +84,13 @@ if frontend_dir.exists():
 @app.get("/")
 async def root():
     """根路径 - 重定向到知识库管理页面"""
-    return RedirectResponse(url="/static/knowledge-base.html")
+    return RedirectResponse(url="/static/pages/knowledge-base.html")
 
 
 @app.get("/model-management.html")
 async def model_management_redirect():
     """模型管理页面 - 重定向到静态文件"""
-    return RedirectResponse(url="/static/model-management.html")
+    return RedirectResponse(url="/static/pages/model-management.html")
 
 
 @app.get("/health")

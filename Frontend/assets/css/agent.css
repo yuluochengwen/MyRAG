@@ -1,0 +1,127 @@
+/* Agent页面自定义样式 */
+
+/* 防止滚动条导致布局偏移 */
+html {
+  scrollbar-gutter: stable;
+}
+
+/* 自定义滚动条样式 - Webkit浏览器 (Chrome, Safari, Edge) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f8f9fa;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c8d0;
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a0a8b1;
+}
+
+/* 自定义滚动条样式 - Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c1c8d0 #f8f9fa;
+}
+
+@layer utilities {
+  .content-auto {
+    content-visibility: auto;
+  }
+  .card-shadow {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  }
+  .card-hover {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.12);
+  }
+  .nav-active {
+    @apply text-primary border-primary;
+  }
+  .transition-custom {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .btn-primary {
+    @apply bg-primary text-white rounded-lg hover:bg-primary/90 transition-all shadow-md hover:shadow-lg flex items-center justify-center;
+  }
+  .btn-secondary {
+    @apply bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-all;
+  }
+  .input-focus {
+    @apply focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary;
+  }
+  .gradient-bg {
+    background: linear-gradient(135deg, #165DFF 0%, #36CFC9 100%);
+  }
+}
+
+.session-item-active {
+  border-color: #165dff !important;
+  background-color: rgba(22, 93, 255, 0.08);
+}
+
+.agent-session-item {
+  transition: all 0.2s ease;
+}
+
+.agent-session-item:hover {
+  border-color: #165dff;
+  background-color: rgba(22, 93, 255, 0.05);
+}
+
+.agent-session-delete {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.agent-session-item:hover .agent-session-delete {
+  opacity: 1;
+}
+
+.agent-tool-item {
+  transition: all 0.2s ease;
+}
+
+.agent-tool-item:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(22, 93, 255, 0.15);
+}
+
+/* 动画效果 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .lg\:col-span-1,
+  .lg\:col-span-2 {
+    width: 100%;
+  }
+  
+  .grid-cols-1 {
+    gap: 4;
+  }
+}

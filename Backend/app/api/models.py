@@ -13,8 +13,8 @@ from tqdm.auto import tqdm
 
 from app.core.dependencies import get_database
 from app.core.database import DatabaseManager
-from app.services.model.model_scanner import model_scanner
-from app.services.model.model_manager import get_model_manager
+from app.services.infrastructure.model.model_scanner import model_scanner
+from app.services.infrastructure.model.model_manager import get_model_manager
 from app.websocket.manager import ws_manager
 from app.utils.logger import get_logger
 
